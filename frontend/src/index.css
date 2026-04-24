@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: Roboto, Inter, system-ui, 'Segoe UI', sans-serif;
+  /* Fondo “canvas” alineado con plantillas tipo Materially (gris muy claro). */
+  background: #f4f6f8;
+  color: #0f172a;
+}
+
+/* Acento superior ligero (estilo dashboards tipo Materially / MUI) */
+body::before {
+  content: '';
+  display: block;
+  width: 100%;
+  height: 3px;
+  background: #c40000;
+}
