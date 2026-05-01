@@ -22,6 +22,8 @@ class InventoryItemAdmin(admin.ModelAdmin):
         'packages_per_fardo',
         'cost_price',
         'unit_price',
+        'package_price',
+        'fardo_price',
         'display_order',
         'image',
     )

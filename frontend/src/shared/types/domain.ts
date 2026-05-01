@@ -47,6 +47,8 @@ export type InventoryItem = {
   /** Lectura API: desglose de `quantity` según jerarquía del producto. */
   hierarchy?: StockHierarchyBreakdown
   unit_price: string
+  package_price?: string
+  fardo_price?: string
   cost_price: string
   branch: number
   line: InventoryLine

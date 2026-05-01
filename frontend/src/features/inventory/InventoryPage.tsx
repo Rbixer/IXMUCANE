@@ -23,16 +23,16 @@ import {
   splitStockHierarchy,
   totalUnitsFromHierarchy,
 } from '../../shared/lib/unitHierarchy'
-import { notifyError, notifyInfo } from '../../shared/lib/notify'
+import { notifyError, notifyInfo, notifySuccess } from '../../shared/lib/notify'
 import { useConfirm } from '../../shared/ui/ConfirmProvider'
 
 /** Línea interna única en API (catálogo local sin división dama/caballero en la interfaz). */
 const DEFAULT_LINE: InventoryLine = 'ropa-dama'
 
 const CABECERA = {
-  title: 'Productos',
+  title: 'TIENDA',
   subtitle:
-    'Alta y edición del catálogo. Las mismas existencias se ven aquí, en Reportes · Inventario general y en POS · Vender; al facturar o anular un ticket el stock se sincroniza en todos los listados.',
+    'Alta y edición del inventario de tienda. Este inventario no se mezcla con bodegas; al facturar o anular un ticket el stock se sincroniza en los listados de tienda.',
 } as const
 
 function stockHierarchyLabel(item: InventoryItem): string {
@@ -58,14 +58,48 @@ function parseBranchParam(raw: string | null): number | null {
   return Number.isFinite(n) && n > 0 ? n : null
 }
 
+function parseBodegaSlot(raw: string | null): 1 | 2 | 3 | null {
+  if (raw == null || raw === '') return null
+  const n = Number(raw)
+  if (n === 1 || n === 2 || n === 3) return n
+  return null
+}
+
+function isBodegaBranchName(name: string): boolean {
+  return /\bbodega\b/i.test(name)
+}
+
+function bodegaSlotFromName(name: string): 1 | 2 | 3 | null {
+  const m = name.trim().toLowerCase().match(/^bodega\s*([123])$/)
+  if (!m) return null
+  const n = Number(m[1])
+  return n === 1 || n === 2 || n === 3 ? n : null
+}
+
+function pickBodegaBranchIds(branches: { id: number; name: string }[]): Set<number> {
+  const ids = new Set<number>()
+  for (const b of branches) {
+    const slot = bodegaSlotFromName(b.name)
+    if (slot != null && b.id > 0) ids.add(b.id)
+  }
+  return ids
+}
+
+function pickBodegaBranchIdBySlot(branches: { id: number; name: string }[], slot: 1 | 2 | 3): number | null {
+  const found = branches.find((b) => b.id > 0 && bodegaSlotFromName(b.name) === slot)
+  if (found) return found.id
+  return null
+}
+
 /** FK de catálogo en base de datos: en modo panel se toma el punto asignado a la sesión. */
 function branchForProductPayload(
   branchLockedId: number | null,
-  branches: { id: number }[] | undefined,
+  branches: { id: number; name: string }[] | undefined,
   formBranch: number,
 ): number {
   if (branchLockedId != null && branchLockedId > 0) return branchLockedId
-  const first = branches?.find((b) => b.id > 0)?.id
+  const nonBodega = (branches ?? []).filter((b) => b.id > 0 && !isBodegaBranchName(b.name))
+  const first = nonBodega.find((b) => b.id > 0)?.id
   if (first != null && first > 0) return first
   return formBranch > 0 ? formBranch : 0
 }
@@ -75,9 +109,10 @@ export function InventoryPage() {
   const modoPanelInv = esModoPanelSoloSeleccion()
   const soloLecturaInventario = esPanelSoloLecturaEnModulo('inventario')
   const [searchParams, setSearchParams] = useSearchParams()
-  const branchLockedId =
+  const branchFromQuery =
     parseBranchParam(searchParams.get('branch')) ??
     (modoPanelInv ? getPanelBranchIdFromStorage() : null)
+  const bodegaSlot = parseBodegaSlot(searchParams.get('bodega'))
 
   const categoriaFiltro = useMemo(() => {
     const raw = searchParams.get('categoria')
@@ -107,6 +142,8 @@ export function InventoryPage() {
     units_per_package: 1,
     packages_per_fardo: 1,
     unit_price: '',
+    package_price: '0',
+    fardo_price: '0',
     cost_price: '0',
     branch: 0,
     line: DEFAULT_LINE,
@@ -131,6 +168,13 @@ export function InventoryPage() {
     }
   }, [existingImageUrl])
 
+  const branchesQuery = useQuery({ queryKey: ['branches'], queryFn: listBranches })
+  const branchLockedId = useMemo(() => {
+    if (branchFromQuery != null) return branchFromQuery
+    if (bodegaSlot == null) return null
+    return pickBodegaBranchIdBySlot(branchesQuery.data ?? [], bodegaSlot)
+  }, [branchFromQuery, bodegaSlot, branchesQuery.data])
+  const bodegaSinConfigurar = bodegaSlot != null && branchLockedId == null
   const query = useQuery({
     queryKey: ['inventory', 'all', branchLockedId ?? 'all', categoriaFiltro ?? 'all'],
     queryFn: () =>
@@ -138,8 +182,8 @@ export function InventoryPage() {
         ...(branchLockedId != null ? { branch: branchLockedId } : {}),
         ...(categoriaFiltro != null ? { category: categoriaFiltro } : {}),
       }),
+    enabled: !bodegaSinConfigurar,
   })
-  const branchesQuery = useQuery({ queryKey: ['branches'], queryFn: listBranches })
   const categoriesQuery = useQuery({
     queryKey: ['inventory', 'categories'],
     queryFn: () => listProductCategories(),
@@ -163,9 +207,15 @@ export function InventoryPage() {
     return m
   }, [branchesQuery.data])
 
-  const lockedBranchName = branchLockedId != null ? branchById.get(branchLockedId) : undefined
-
   const rows = query.data ?? []
+  const bodegaBranchIds = useMemo(() => pickBodegaBranchIds(branchesQuery.data ?? []), [branchesQuery.data])
+  const lockedBranchName =
+    bodegaSlot != null ? `Bodega ${bodegaSlot}` : branchLockedId != null ? branchById.get(branchLockedId) : undefined
+  const visibleRows = useMemo(() => {
+    if (bodegaSinConfigurar) return []
+    if (branchLockedId != null) return rows
+    return rows.filter((row) => !bodegaBranchIds.has(row.branch))
+  }, [rows, branchLockedId, bodegaBranchIds, bodegaSinConfigurar])
 
   useEffect(() => {
     const onCart = () => setCartRevision((n) => n + 1)
@@ -174,9 +224,9 @@ export function InventoryPage() {
   }, [])
 
   const nextDisplayOrder = useMemo(() => {
-    if (rows.length === 0) return 1
-    return Math.max(...rows.map((r) => r.display_order ?? 0), 0) + 1
-  }, [rows])
+    if (visibleRows.length === 0) return 1
+    return Math.max(...visibleRows.map((r) => r.display_order ?? 0), 0) + 1
+  }, [visibleRows])
 
   useEffect(() => {
     setForm((prev) => {
@@ -190,7 +240,8 @@ export function InventoryPage() {
       if (branchLockedId != null && branchLockedId > 0 && prev.branch !== branchLockedId) {
         return { ...prev, branch: branchLockedId }
       }
-      const first = branchesQuery.data?.find((x) => x.id > 0)?.id ?? 0
+      const first =
+        branchesQuery.data?.find((x) => x.id > 0 && !isBodegaBranchName(x.name))?.id ?? 0
       if (prev.branch === 0 && first > 0) {
         return { ...prev, branch: first }
       }
@@ -221,6 +272,8 @@ export function InventoryPage() {
         units_per_package: 1,
         packages_per_fardo: 1,
         unit_price: '',
+        package_price: '0',
+        fardo_price: '0',
         cost_price: '0',
         branch: branchLockedId ?? 0,
         line: line,
@@ -265,6 +318,8 @@ export function InventoryPage() {
         units_per_package: 1,
         packages_per_fardo: 1,
         unit_price: '',
+        package_price: '0',
+        fardo_price: '0',
         cost_price: '0',
         branch: branchLockedId ?? 0,
         line: DEFAULT_LINE,
@@ -280,6 +335,10 @@ export function InventoryPage() {
   })
   const handleCreate = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (bodegaSinConfigurar) {
+      setApiError('La bodega actual no esta configurada. Cree el registro correspondiente (Bodega 1, 2 o 3).')
+      return
+    }
     const branchId = branchForProductPayload(branchLockedId, branchesQuery.data, form.branch)
     if (!form.name.trim() || !form.sku.trim() || form.quantity <= 0 || !form.unit_price || !branchId) {
       setApiError(
@@ -314,7 +373,7 @@ export function InventoryPage() {
 
   const openCartModal = (item: InventoryItem) => {
     if (item.quantity <= 0) {
-      notifyInfo('Este producto no tiene stock disponible.')
+      notifyInfo('Este producto no está disponible (sin stock).')
       return
     }
     const max = maxAgregable(item)
@@ -355,6 +414,10 @@ export function InventoryPage() {
   }
 
   const handleOpenCreateModal = () => {
+    if (bodegaSinConfigurar) {
+      notifyInfo('Esta bodega no esta configurada como almacen principal en el sistema (Bodega 1, 2 o 3).')
+      return
+    }
     setApiError('')
     setImageFile(null)
     setExistingImageUrl('')
@@ -367,6 +430,8 @@ export function InventoryPage() {
       units_per_package: 1,
       packages_per_fardo: 1,
       unit_price: '',
+      package_price: '0',
+      fardo_price: '0',
       cost_price: '0',
       branch: branchLockedId ?? 0,
       line: DEFAULT_LINE,
@@ -393,6 +458,8 @@ export function InventoryPage() {
       units_per_package: 1,
       packages_per_fardo: 1,
       unit_price: '',
+      package_price: '0',
+      fardo_price: '0',
       cost_price: '0',
       branch: branchLockedId ?? 0,
       line: DEFAULT_LINE,
@@ -419,6 +486,8 @@ export function InventoryPage() {
       units_per_package: upp,
       packages_per_fardo: ppf,
       unit_price: item.unit_price,
+      package_price: item.package_price ?? '0',
+      fardo_price: item.fardo_price ?? '0',
       cost_price: item.cost_price ?? '0',
       branch: item.branch,
       line: item.line,
@@ -442,6 +511,8 @@ export function InventoryPage() {
       units_per_package: 1,
       packages_per_fardo: 1,
       unit_price: '',
+      package_price: '0',
+      fardo_price: '0',
       cost_price: '0',
       branch: branchLockedId ?? 0,
       line: DEFAULT_LINE,
@@ -456,6 +527,7 @@ export function InventoryPage() {
       setListDeleteError('')
     },
     onSuccess: async () => {
+      notifySuccess('Producto eliminado del inventario.')
       try {
         await Promise.all([
           queryClient.invalidateQueries({ queryKey: ['inventory'] }),
@@ -523,14 +595,16 @@ export function InventoryPage() {
             : cabecera.title
         }
         subtitle={
-          soloLecturaInventario
+          bodegaSinConfigurar
+            ? `Bodega ${bodegaSlot}: configure un punto de inventario con ese nombre exacto para manejar existencias separadas.`
+            : soloLecturaInventario
             ? `${branchLockedId != null ? `Vista de su catálogo asignado. ` : ''}${cabecera.subtitle} Fardos, paquetes y unidades reflejan lo disponible (stock menos carrito). Pulse el producto o el icono del carrito para indicar cantidad.`
             : branchLockedId != null
               ? `Catálogo filtrado. ${cabecera.subtitle}`
-              : cabecera.subtitle
+              : `${cabecera.subtitle} Esta vista no mezcla productos de bodegas.`
         }
         action={
-          soloLecturaInventario ? null : (
+          soloLecturaInventario || bodegaSinConfigurar ? null : (
             <div className="flex flex-wrap items-center justify-end gap-2">
               <button
                 type="button"
@@ -619,8 +693,8 @@ export function InventoryPage() {
                     className="tabular-nums font-medium text-slate-900"
                     title={
                       soloLecturaInventario
-                        ? 'Stock total en sistema (igual que Reportes · Inventario general). El carrito reserva hasta facturar.'
-                        : 'Total de piezas en inventario (igual que Reportes · Inventario general).'
+                        ? 'Stock total en sistema (igual que Reportes · Inventario consolidado). El carrito reserva hasta facturar.'
+                        : 'Total de piezas en inventario (igual que Reportes · Inventario consolidado).'
                     }
                   >
                     {item.quantity}
@@ -634,6 +708,20 @@ export function InventoryPage() {
               render: (item) => <span className="tabular-nums">{item.cost_price ?? '0'}</span>,
             },
             { key: 'unit_price', label: 'Precio venta' },
+            {
+              key: 'disponibilidad',
+              label: 'Disponible',
+              render: (item) =>
+                item.quantity > 0 ? (
+                  <span className="inline-flex rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-800">
+                    Disponible
+                  </span>
+                ) : (
+                  <span className="inline-flex rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700">
+                    No disponible
+                  </span>
+                ),
+            },
             {
               key: 'actions',
               label: 'Acciones',
@@ -685,7 +773,7 @@ export function InventoryPage() {
               ),
             },
           ]}
-          rows={rows}
+          rows={visibleRows}
           emptyMessage={query.isLoading ? 'Cargando inventario...' : 'No hay productos registrados.'}
         />
       </Card>
@@ -865,7 +953,7 @@ export function InventoryPage() {
             </h3>
             <p className="mt-1 text-xs leading-snug text-slate-700">
               {editingItemId
-                ? 'Actualice datos y las existencias en fardos completos. El total en unidades es fardos × U/fardo; al guardar se alinea con la columna Unidades del inventario general.'
+                ? 'Actualice datos y las existencias en fardos completos. El total en unidades es fardos × U/fardo; al guardar se alinea con la columna Unidades del inventario consolidado.'
                 : 'Complete nombre, SKU, empaque, existencias, precios y categoría; nada se guarda en el catálogo hasta que pulse Guardar producto.'}
             </p>
             {!editingItemId ? (
@@ -982,7 +1070,7 @@ export function InventoryPage() {
                     </label>
                     <p className="text-[10px] leading-snug text-slate-700 sm:col-span-2">
                       Un fardo equivale a «paquetes por fardo» × «unidades por paquete». El total guardado es fardos ×
-                      U/fardo (columna «Unidades» del inventario general).
+                      U/fardo (columna «Unidades» del inventario consolidado).
                       {editingItemId ? (
                         <>
                           {' '}
@@ -1018,6 +1106,30 @@ export function InventoryPage() {
                     placeholder="Precio venta"
                     value={form.unit_price}
                     onChange={(event) => setForm((prev) => ({ ...prev, unit_price: event.target.value }))}
+                  />
+                </label>
+                <label className="block text-[11px] font-semibold text-black sm:col-span-2">
+                  Precio por paquete
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    className="mt-0.5 w-full max-w-xs rounded-md border border-slate-300 px-2 py-1.5 text-sm text-black placeholder:text-neutral-700"
+                    placeholder="Precio por paquete"
+                    value={form.package_price ?? '0'}
+                    onChange={(event) => setForm((prev) => ({ ...prev, package_price: event.target.value }))}
+                  />
+                </label>
+                <label className="block text-[11px] font-semibold text-black sm:col-span-2">
+                  Precio por fardo
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    className="mt-0.5 w-full max-w-xs rounded-md border border-slate-300 px-2 py-1.5 text-sm text-black placeholder:text-neutral-700"
+                    placeholder="Precio por fardo"
+                    value={form.fardo_price ?? '0'}
+                    onChange={(event) => setForm((prev) => ({ ...prev, fardo_price: event.target.value }))}
                   />
                 </label>
 

@@ -15,14 +15,14 @@ import {
   Truck,
   ClipboardList,
   FolderInput,
-  BarChart3,
-  LineChart,
   Presentation,
   Package,
   FileText,
   Receipt,
   UserPlus,
   Users,
+  ArrowLeft,
+  ContactRound,
 } from 'lucide-react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { authStorage } from '../../shared/lib/auth'
@@ -39,11 +39,12 @@ import { BrandLogoMark } from '../../shared/ui/BrandLogoMark'
 
 const dashboardLink = { to: '/dashboard', label: 'Dashboard', Icon: LayoutDashboard }
 
-const SIDEBAR_EXPANDED_KEY = 'boutique_sidebar_expanded'
+/** true = barra ancha con etiquetas; false = riel estrecho solo iconos */
+const SIDEBAR_WIDE_KEY = 'boutique_sidebar_wide'
 
-function readSidebarExpanded(): boolean {
+function readSidebarWide(): boolean {
   if (typeof localStorage === 'undefined') return true
-  return localStorage.getItem(SIDEBAR_EXPANDED_KEY) !== '0'
+  return localStorage.getItem(SIDEBAR_WIDE_KEY) !== '0'
 }
 
 /** Título contextual en la barra superior (patrón Materially). */
@@ -54,6 +55,7 @@ function dashboardPageTitle(pathname: string): string {
   if (pathname.startsWith('/inventario/stock')) return 'Stock'
   if (pathname.startsWith('/inventario/categorias')) return 'Inventario · Categorías'
   if (pathname.startsWith('/inventario/pedidos')) return 'Inventario · Pedidos'
+  if (pathname.startsWith('/inventario/bodegas')) return 'Inventario · Bodegas'
   if (pathname.startsWith('/inventario/productos')) return 'Inventario · Productos'
   if (pathname === '/inventario') return 'Inventario · Productos'
   if (pathname.startsWith('/inventario/ropa-dama')) return 'Inventario · Productos'
@@ -63,11 +65,13 @@ function dashboardPageTitle(pathname: string): string {
   if (pathname.startsWith('/estadisticas/graficos-ventas')) return 'Estadísticas · Gráficos'
   if (pathname.startsWith('/estadisticas/power-bi')) return 'Estadísticas · Power BI'
   if (pathname.startsWith('/estadisticas')) return 'Estadísticas'
-  if (pathname.startsWith('/reportes/inventario')) return 'Reportes · Inventario general'
+  if (pathname.startsWith('/reportes/inventario')) return 'Reportes · Inventario consolidado'
   if (pathname.startsWith('/reportes/sistema-pos')) return 'Reportes · Sistema POS'
   if (pathname.startsWith('/reportes')) return 'Reportes'
   if (pathname.startsWith('/pos/vender')) return 'POS · Vender'
   if (pathname.startsWith('/pos/facturas')) return 'POS · Facturas'
+  if (pathname.startsWith('/pos/cotizaciones')) return 'POS · Cotizaciones'
+  if (pathname.startsWith('/pos/clientes')) return 'POS · Clientes'
   if (pathname.startsWith('/pos')) return 'POS'
   if (pathname.startsWith('/usuario/crear')) return 'Usuario · Crear usuario'
   if (pathname.startsWith('/usuario')) return 'Usuario'
@@ -83,8 +87,6 @@ export function DashboardLayout() {
 
   const [posOpen, setPosOpen] = useState(() => location.pathname.startsWith('/pos'))
   const [usuarioOpen, setUsuarioOpen] = useState(() => location.pathname.startsWith('/usuario'))
-  const [inventarioOpen, setInventarioOpen] = useState(() => location.pathname.startsWith('/inventario'))
-  const [estadisticasOpen, setEstadisticasOpen] = useState(() => location.pathname.startsWith('/estadisticas'))
   const [reportesOpen, setReportesOpen] = useState(() => location.pathname.startsWith('/reportes'))
   const mostrarEncabezadoPanel = location.pathname === '/dashboard'
   const modoPanel = esModoPanelSoloSeleccion()
@@ -155,14 +157,6 @@ export function DashboardLayout() {
   }, [location.pathname])
 
   useEffect(() => {
-    if (location.pathname.startsWith('/inventario')) setInventarioOpen(true)
-  }, [location.pathname])
-
-  useEffect(() => {
-    if (location.pathname.startsWith('/estadisticas')) setEstadisticasOpen(true)
-  }, [location.pathname])
-
-  useEffect(() => {
     if (location.pathname.startsWith('/reportes')) setReportesOpen(true)
   }, [location.pathname])
 
@@ -173,11 +167,12 @@ export function DashboardLayout() {
       return
     }
     if (!profileQuery.isSuccess) return
-    const req = pathRequiresModule(location.pathname)
-    if (req != null && !modulosPanelSet?.has(req)) {
+    const req = pathRequiresModule(location.pathname, location.search)
+    const hasReq = req == null ? true : (modulosPanelSet?.has(req) ?? false) || (req.startsWith('inventario_bodega_') && (modulosPanelSet?.has('inventario') ?? false))
+    if (!hasReq) {
       navigate('/dashboard', { replace: true })
     }
-  }, [location.pathname, modoPanel, profileQuery.isSuccess, modulosPanelSet, navigate])
+  }, [location.pathname, location.search, modoPanel, profileQuery.isSuccess, modulosPanelSet, navigate])
 
   const logout = () => {
     authStorage.clear()
@@ -260,12 +255,12 @@ export function DashboardLayout() {
     logout()
   }
 
-  const [sidebarExpanded, setSidebarExpanded] = useState(readSidebarExpanded)
-  const toggleSidebarExpanded = () => {
-    setSidebarExpanded((prev) => {
+  const [sidebarWide, setSidebarWide] = useState(readSidebarWide)
+  const toggleSidebarWide = () => {
+    setSidebarWide((prev) => {
       const next = !prev
       if (typeof localStorage !== 'undefined') {
-        localStorage.setItem(SIDEBAR_EXPANDED_KEY, next ? '1' : '0')
+        localStorage.setItem(SIDEBAR_WIDE_KEY, next ? '1' : '0')
       }
       return next
     })
@@ -276,457 +271,87 @@ export function DashboardLayout() {
   const navReportesActivo = location.pathname.startsWith('/reportes')
   const navPosActivo = location.pathname.startsWith('/pos')
   const navUsuarioActivo = location.pathname.startsWith('/usuario')
-  const defaultInventarioTo = '/inventario/productos'
 
   const reportesSub = useMemo(
     () =>
       [
-        { to: '/reportes/inventario', label: 'Inventario general', Icon: Boxes },
+        { to: '/reportes/inventario', label: 'Inventario consolidado', Icon: Boxes },
         { to: '/reportes/sistema-pos', label: 'Sistema POS', Icon: Server },
       ] as const,
     [],
   )
-  const defaultReportesTo = reportesSub[0]?.to ?? '/reportes/inventario'
 
   const posMenuSub = useMemo(
     () =>
       [
         { to: '/pos/vender', label: 'Vender', Icon: ShoppingCart },
         { to: '/pos/facturas', label: 'Facturas', Icon: Receipt },
+        { to: '/pos/cotizaciones', label: 'Cotizaciones', Icon: FileText },
+        { to: '/pos/clientes', label: 'Clientes', Icon: ContactRound },
       ] as const,
     [],
   )
-  const defaultPosTo = posMenuSub[0]?.to ?? '/pos/vender'
 
   const usuarioMenuSub = useMemo(
     () => [{ to: '/usuario/crear', label: 'Crear usuario', Icon: UserPlus }] as const,
     [],
   )
+
+  const defaultReportesTo = reportesSub[0]?.to ?? '/reportes/inventario'
+  const defaultPosTo = posMenuSub[0]?.to ?? '/pos/vender'
   const defaultUsuarioTo = usuarioMenuSub[0]?.to ?? '/usuario/crear'
 
-  const inventarioSub = useMemo(
-    () =>
-      [
-        { to: '/inventario/productos', label: 'Productos', Icon: Package },
-        { to: '/inventario/pedidos', label: 'Pedidos', Icon: ClipboardList },
-        { to: '/inventario/categorias', label: 'Categorías', Icon: FolderInput },
-      ] as const,
-    [],
-  )
-
-  const estadisticasSub = useMemo(
-    () =>
-      [
-        { to: '/estadisticas/metricas-ventas', label: 'Métricas ventas', Icon: BarChart3 },
-        { to: '/estadisticas/graficos-ventas', label: 'Gráficos ventas', Icon: LineChart },
-        { to: '/estadisticas/power-bi', label: 'Power BI', Icon: Presentation },
-      ] as const,
-    [],
-  )
-  const defaultEstadisticasTo = estadisticasSub[0]?.to ?? '/estadisticas/metricas-ventas'
-
   const inicioActivo = location.pathname === '/dashboard'
+  const mostrarBotonRegresar = location.pathname !== '/dashboard'
   const btnHeaderBase =
     'inline-flex shrink-0 items-center justify-center rounded-md border border-material-outline-strong bg-material-surface px-2.5 py-1 text-xs font-semibold text-material-emphasis shadow-sm transition hover:bg-material-surface-variant sm:px-3 sm:text-sm'
 
   /** Activo estilo Materially: tinte suave del color primario (boutique). */
   const navActiveFill = 'bg-boutique-50 text-boutique-700 font-semibold'
-  const navInactive = 'text-material-muted hover:bg-material-surface-variant'
+  const navInactive = 'text-black hover:bg-material-surface-variant'
 
   return (
-    <div className="flex min-h-screen flex-row bg-material-canvas text-material-emphasis antialiased">
-      <div
-        className={`flex shrink-0 flex-col border-r border-material-outline-strong transition-[width] duration-200 ease-out ${
-          sidebarExpanded ? 'w-[min(100%,18rem)] sm:w-72' : 'w-14'
-        }`}
-      >
-        <aside
-          className="min-h-screen w-full overflow-y-auto overflow-x-hidden border-y-0 border-l-0 border-r border-material-outline bg-material-surface text-material-emphasis shadow-[2px_0_12px_rgba(15,23,42,0.05)]"
-        >
-            <div
-              className={`border-b border-material-outline bg-material-surface py-2 ${sidebarExpanded ? 'pl-2 pr-2' : 'pl-1.5 pr-1.5'}`}
+    <div className="flex min-h-screen flex-col bg-material-canvas text-material-emphasis antialiased">
+      <header className="fixed inset-x-0 top-0 z-[10001] flex h-16 shrink-0 flex-col border-b border-material-outline bg-material-surface shadow-material-nav">
+        <div className="h-0.5 w-full shrink-0 bg-boutique-500" aria-hidden />
+        <div className="flex min-h-0 min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1.5 px-2 sm:gap-x-3 sm:px-3">
+          <div className="flex min-w-0 shrink-0 items-center gap-2">
+            <BrandLogoMark size="xs" className="shrink-0" />
+            <div className="min-w-0 leading-tight">
+              <p className="truncate text-xs font-bold uppercase tracking-wide text-neutral-900 sm:text-[13px]">
+                ALUMINIOS IXMUCANE
+              </p>
+              <p className="truncate text-[11px] font-semibold text-boutique-500 sm:text-xs">
+                {modoPanel ? 'Consulta' : 'Administración'}
+              </p>
+            </div>
+          </div>
+          <div className="flex shrink-0 items-center gap-1.5 border-l border-material-outline pl-2 sm:gap-2 sm:pl-3">
+            <button
+              type="button"
+              onClick={toggleSidebarWide}
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-material-outline bg-material-surface text-boutique-500 transition hover:bg-material-surface-variant sm:h-10 sm:w-10"
+              aria-expanded={sidebarWide}
+              aria-label={sidebarWide ? 'Contraer barra lateral (solo iconos)' : 'Expandir barra lateral'}
+              title={sidebarWide ? 'Contraer menú' : 'Expandir menú'}
             >
-              <div className="flex w-full min-w-0 items-center justify-start gap-2">
-                <BrandLogoMark size="xs" className="shrink-0" />
-                {sidebarExpanded ? (
-                  <div className="min-w-0 flex-1 leading-tight">
-                    <p className="truncate text-xs font-bold uppercase tracking-wide text-neutral-900 sm:text-[13px]">
-                      ALUMINIOS IXMUCANE
-                    </p>
-                    <p className="truncate text-[11px] font-semibold text-boutique-500 sm:text-xs">
-                      {modoPanel ? 'Consulta' : 'Administración'}
-                    </p>
-                  </div>
-                ) : null}
-              </div>
-              {modoPanel && sidebarExpanded ? (
-                <div className="mt-2 space-y-1 border-t border-material-outline pt-2 text-[11px] leading-snug text-material-emphasis sm:text-xs">
-                  <p className="truncate">
-                    <span className="font-semibold">Nombre:</span> {textoNombreCompleto}
-                  </p>
-                  <p className="truncate">
-                    <span className="font-semibold">Código:</span> {textoCodigo}{' '}
-                    <span className="text-material-outline-strong">|</span>{' '}
-                    <span className="font-semibold">Usuario:</span> {textoUsuario}
-                  </p>
-                  {profile?.personnel_branch_name?.trim() ? (
-                    <p className="truncate">
-                      <span className="font-semibold">Asignado:</span>{' '}
-                      {profile.personnel_branch_name.trim()}
-                    </p>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-            {sidebarExpanded ? (
-              <div className="border-b border-material-outline bg-material-surface-variant px-2 py-1.5">
-                <p className="text-center text-[10px] font-medium leading-snug text-material-muted">
-                  {modoPanel ? 'Inventario en consulta y carrito' : 'Inventario, stock y POS.'}
-                </p>
-              </div>
-            ) : (
-              <div className="h-0.5 shrink-0 bg-boutique-500/85 lg:block" aria-hidden />
-            )}
-            <div className={sidebarExpanded ? 'p-3' : 'p-1.5 lg:px-1 lg:py-2'}>
-              <nav className="space-y-1">
-                <NavLink
-                  to={dashboardLink.to}
-                  title={dashboardLink.label}
-                  className={({ isActive }) =>
-                    `flex items-center rounded-lg py-2 text-sm ${
-                      sidebarExpanded ? 'justify-start gap-2 px-3' : 'justify-center px-0 lg:px-0'
-                    } ${isActive ? navActiveFill : navInactive}`
-                  }
-                >
-                  <DashboardNavIcon size={16} className="shrink-0" />
-                  {sidebarExpanded ? dashboardLink.label : null}
-                </NavLink>
-
-                {can('proveedores') ? (
-                  <div className="pt-1">
-                    <NavLink
-                      to="/proveedores"
-                      title="Proveedores"
-                      className={({ isActive }) =>
-                        `flex items-center rounded-lg py-2 text-sm font-medium ${
-                          sidebarExpanded ? 'justify-start gap-2 px-3' : 'justify-center px-0'
-                        } ${isActive ? navActiveFill : navInactive}`
-                      }
-                    >
-                      <Truck size={16} className="shrink-0" aria-hidden />
-                      {sidebarExpanded ? <span className="truncate">Proveedores</span> : null}
-                    </NavLink>
-                  </div>
-                ) : null}
-
-                {can('inventario') ? (
-                  <div className="pt-1">
-                    {sidebarExpanded ? (
-                      <button
-                        type="button"
-                        onClick={() => setInventarioOpen((o) => !o)}
-                        aria-expanded={inventarioOpen}
-                        className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium ${
-                          navInventarioActivo ? navActiveFill : navInactive
-                        }`}
-                      >
-                        <span className="flex items-center gap-2">
-                          <Boxes size={16} aria-hidden />
-                          Inventario
-                        </span>
-                        <ChevronDown
-                          size={16}
-                          className={`shrink-0 transition-transform ${inventarioOpen ? 'rotate-180' : ''}`}
-                          aria-hidden
-                        />
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        title="Inventario"
-                        onClick={() => navigate(defaultInventarioTo)}
-                        className={`flex w-full items-center justify-center rounded-lg py-2 ${
-                          navInventarioActivo ? navActiveFill : navInactive
-                        }`}
-                      >
-                        <Boxes size={16} aria-hidden />
-                      </button>
-                    )}
-                    {sidebarExpanded && inventarioOpen ? (
-                      <div className="mt-1 space-y-0.5 border-l-2 border-material-outline-strong pl-2" aria-label="Inventario">
-                        {inventarioSub.map(({ to, label, Icon }) => {
-                          let subActive = false
-                          if (label === 'Productos') {
-                            subActive =
-                              location.pathname === '/inventario/productos' || location.pathname === '/inventario'
-                          } else if (label === 'Pedidos') {
-                            subActive = location.pathname.startsWith('/inventario/pedidos')
-                          } else if (label === 'Categorías') {
-                            subActive = location.pathname.startsWith('/inventario/categorias')
-                          }
-                          return (
-                            <NavLink
-                              key={to}
-                              to={to}
-                              title={label}
-                              className={`flex items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium ${
-                                subActive ? 'bg-boutique-50 text-boutique-600' : 'text-material-muted hover:bg-material-surface-variant'
-                              }`}
-                            >
-                              <Icon size={15} className="shrink-0" aria-hidden />
-                              {label}
-                            </NavLink>
-                          )
-                        })}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                {can('estadisticas') ? (
-                  <div className="pt-1">
-                    {sidebarExpanded ? (
-                      <button
-                        type="button"
-                        onClick={() => setEstadisticasOpen((o) => !o)}
-                        aria-expanded={estadisticasOpen}
-                        className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium ${
-                          navEstadisticasActivo ? navActiveFill : navInactive
-                        }`}
-                      >
-                        <span className="flex items-center gap-2">
-                          <BarChart3 size={16} aria-hidden />
-                          Estadísticas
-                        </span>
-                        <ChevronDown
-                          size={16}
-                          className={`shrink-0 transition-transform ${estadisticasOpen ? 'rotate-180' : ''}`}
-                          aria-hidden
-                        />
-                      </button>
-                    ) : (
-                      <button
-                        type="button"
-                        title="Estadísticas"
-                        onClick={() => navigate(defaultEstadisticasTo)}
-                        className={`flex w-full items-center justify-center rounded-lg py-2 ${
-                          navEstadisticasActivo ? navActiveFill : navInactive
-                        }`}
-                      >
-                        <BarChart3 size={16} aria-hidden />
-                      </button>
-                    )}
-                    {sidebarExpanded && estadisticasOpen ? (
-                      <div className="mt-1 space-y-0.5 border-l-2 border-material-outline-strong pl-2" aria-label="Estadísticas">
-                        {estadisticasSub.map(({ to, label, Icon }) => (
-                          <NavLink
-                            key={to}
-                            to={to}
-                            end
-                            title={label}
-                            className={({ isActive }) =>
-                              `flex items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium ${
-                                isActive ? 'bg-boutique-50 text-boutique-600' : 'text-material-muted hover:bg-material-surface-variant'
-                              }`
-                            }
-                          >
-                            <Icon size={15} className="shrink-0" aria-hidden />
-                            {label}
-                          </NavLink>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-
-                {can('reportes') ? (
-                    <div className="pt-1">
-                      {sidebarExpanded ? (
-                        <button
-                          type="button"
-                          onClick={() => setReportesOpen((o) => !o)}
-                          aria-expanded={reportesOpen}
-                          className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium ${
-                            navReportesActivo ? navActiveFill : navInactive
-                          }`}
-                        >
-                          <span className="flex items-center gap-2">
-                            <FileText size={16} aria-hidden />
-                            Reportes
-                          </span>
-                          <ChevronDown
-                            size={16}
-                            className={`shrink-0 transition-transform ${reportesOpen ? 'rotate-180' : ''}`}
-                            aria-hidden
-                          />
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          title="Reportes"
-                          onClick={() => navigate(defaultReportesTo)}
-                          className={`flex w-full items-center justify-center rounded-lg py-2 ${
-                            navReportesActivo ? navActiveFill : navInactive
-                          }`}
-                        >
-                          <FileText size={16} aria-hidden />
-                        </button>
-                      )}
-                      {sidebarExpanded && reportesOpen ? (
-                        <div className="mt-1 space-y-0.5 border-l-2 border-material-outline-strong pl-2" aria-label="Reportes">
-                          {reportesSub.map(({ to, label, Icon }) => (
-                            <NavLink
-                              key={to}
-                              to={to}
-                              end
-                              title={label}
-                              className={({ isActive }) =>
-                                `flex items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium ${
-                                  isActive ? 'bg-boutique-50 text-boutique-600' : 'text-material-muted hover:bg-material-surface-variant'
-                                }`
-                              }
-                            >
-                              <Icon size={15} className="shrink-0" aria-hidden />
-                              {label}
-                            </NavLink>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                ) : null}
-
-                {can('pos') ? (
-                    <div className="pt-1">
-                      {sidebarExpanded ? (
-                        <button
-                          type="button"
-                          onClick={() => setPosOpen((o) => !o)}
-                          aria-expanded={posOpen}
-                          className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium ${
-                            navPosActivo ? navActiveFill : navInactive
-                          }`}
-                        >
-                          <span className="flex items-center gap-2">
-                            <Store size={16} aria-hidden />
-                            POS
-                          </span>
-                          <ChevronDown
-                            size={16}
-                            className={`shrink-0 transition-transform ${posOpen ? 'rotate-180' : ''}`}
-                            aria-hidden
-                          />
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          title="POS"
-                          onClick={() => navigate(defaultPosTo)}
-                          className={`flex w-full items-center justify-center rounded-lg py-2 ${
-                            navPosActivo ? navActiveFill : navInactive
-                          }`}
-                        >
-                          <Store size={16} aria-hidden />
-                        </button>
-                      )}
-                      {sidebarExpanded && posOpen ? (
-                        <div className="mt-1 space-y-0.5 border-l-2 border-material-outline-strong pl-2" aria-label="POS">
-                          {posMenuSub.map(({ to, label, Icon }) => (
-                            <NavLink
-                              key={to}
-                              to={to}
-                              end={to === '/pos/vender'}
-                              title={label}
-                              className={({ isActive }) =>
-                                `flex items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium ${
-                                  isActive ? 'bg-boutique-50 text-boutique-600' : 'text-material-muted hover:bg-material-surface-variant'
-                                }`
-                              }
-                            >
-                              <Icon size={15} className="shrink-0" aria-hidden />
-                              {label}
-                            </NavLink>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                ) : null}
-
-                {!modoPanel ? (
-                    <div className="pt-1">
-                      {sidebarExpanded ? (
-                        <button
-                          type="button"
-                          onClick={() => setUsuarioOpen((o) => !o)}
-                          aria-expanded={usuarioOpen}
-                          className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium ${
-                            navUsuarioActivo ? navActiveFill : navInactive
-                          }`}
-                        >
-                          <span className="flex items-center gap-2">
-                            <Users size={16} aria-hidden />
-                            Usuario
-                          </span>
-                          <ChevronDown
-                            size={16}
-                            className={`shrink-0 transition-transform ${usuarioOpen ? 'rotate-180' : ''}`}
-                            aria-hidden
-                          />
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          title="Usuario"
-                          onClick={() => navigate(defaultUsuarioTo)}
-                          className={`flex w-full items-center justify-center rounded-lg py-2 ${
-                            navUsuarioActivo ? navActiveFill : navInactive
-                          }`}
-                        >
-                          <Users size={16} aria-hidden />
-                        </button>
-                      )}
-                      {sidebarExpanded && usuarioOpen ? (
-                        <div
-                          className="mt-1 space-y-0.5 border-l-2 border-material-outline-strong pl-2"
-                          aria-label="Usuario"
-                        >
-                          {usuarioMenuSub.map(({ to, label, Icon }) => (
-                            <NavLink
-                              key={to}
-                              to={to}
-                              title={label}
-                              className={({ isActive }) =>
-                                `flex items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium ${
-                                  isActive ? 'bg-boutique-50 text-boutique-600' : 'text-material-muted hover:bg-material-surface-variant'
-                                }`
-                              }
-                            >
-                              <Icon size={15} className="shrink-0" aria-hidden />
-                              {label}
-                            </NavLink>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                ) : null}
-              </nav>
-            </div>
-          </aside>
-      </div>
-
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-material-canvas">
-        <header className="sticky top-0 z-40 flex h-10 shrink-0 items-stretch border-b border-material-outline bg-material-surface shadow-material-nav sm:h-11">
-          <button
-            type="button"
-            onClick={toggleSidebarExpanded}
-            className="flex w-10 shrink-0 items-center justify-center border-r border-material-outline bg-material-surface text-boutique-500 transition hover:bg-material-surface-variant sm:w-11"
-            aria-expanded={sidebarExpanded}
-            aria-label={sidebarExpanded ? 'Reducir menú lateral' : 'Ampliar menú lateral'}
-            title={sidebarExpanded ? 'Solo iconos' : 'Mostrar nombres'}
-          >
-            <Menu size={22} strokeWidth={2.25} aria-hidden />
-          </button>
-            <div className="flex min-w-0 flex-1 items-center justify-between gap-2 px-2 sm:px-3">
+              <Menu size={22} strokeWidth={2.25} aria-hidden />
+            </button>
             <div className="flex min-w-0 flex-wrap items-center gap-1.5 sm:gap-2">
+              {mostrarBotonRegresar ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (window.history.length > 1) navigate(-1)
+                    else navigate('/dashboard')
+                  }}
+                  className={btnHeaderBase}
+                  title="Regresar"
+                >
+                  <ArrowLeft size={14} className="mr-1.5 shrink-0" aria-hidden />
+                  Regresar
+                </button>
+              ) : null}
               <button
                 type="button"
                 onClick={() => navigate('/dashboard')}
@@ -752,24 +377,37 @@ export function DashboardLayout() {
                 </button>
               ) : null}
             </div>
-            <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-              {modoPanel && can('inventario') ? (
-                <button
-                  type="button"
-                  onClick={() => navigate('/carrito')}
-                  className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-boutique-100 bg-material-surface text-boutique-500 shadow-sm transition hover:bg-boutique-50 sm:h-9 sm:w-9"
-                  aria-label={`Carrito${unidadesCarrito > 0 ? `, ${unidadesCarrito} unidades` : ''}`}
-                  title="Carrito"
-                >
-                  <ShoppingCart size={18} strokeWidth={2.25} aria-hidden />
-                  {unidadesCarrito > 0 ? (
-                    <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-boutique-500 px-0.5 text-[9px] font-bold text-white">
-                      {unidadesCarrito > 99 ? '99+' : unidadesCarrito}
-                    </span>
-                  ) : null}
-                </button>
-              ) : null}
-              <div className="relative shrink-0" ref={userMenuRef}>
+          </div>
+          {modoPanel ? (
+            <div className="hidden min-w-0 flex-1 basis-full flex-col gap-0.5 text-[10px] leading-snug text-material-emphasis sm:flex sm:basis-auto sm:max-w-[min(100%,28rem)] sm:text-[11px] lg:flex-row lg:flex-wrap lg:items-center lg:gap-x-4">
+              <p className="truncate">
+                <span className="font-semibold">Nombre:</span> {textoNombreCompleto}
+              </p>
+              <p className="truncate">
+                <span className="font-semibold">Código:</span> {textoCodigo}{' '}
+                <span className="text-material-outline-strong">|</span>{' '}
+                <span className="font-semibold">Usuario:</span> {textoUsuario}
+              </p>
+            </div>
+          ) : null}
+          <div className="ml-auto flex shrink-0 items-center gap-1.5 sm:gap-2">
+            {modoPanel && can('inventario') ? (
+              <button
+                type="button"
+                onClick={() => navigate('/carrito')}
+                className="relative flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-boutique-100 bg-material-surface text-boutique-500 shadow-sm transition hover:bg-boutique-50 sm:h-9 sm:w-9"
+                aria-label={`Carrito${unidadesCarrito > 0 ? `, ${unidadesCarrito} unidades` : ''}`}
+                title="Carrito"
+              >
+                <ShoppingCart size={18} strokeWidth={2.25} aria-hidden />
+                {unidadesCarrito > 0 ? (
+                  <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-boutique-500 px-0.5 text-[9px] font-bold text-white">
+                    {unidadesCarrito > 99 ? '99+' : unidadesCarrito}
+                  </span>
+                ) : null}
+              </button>
+            ) : null}
+            <div className="relative shrink-0" ref={userMenuRef}>
               <button
                 type="button"
                 onClick={() => setUserMenuOpen((o) => !o)}
@@ -783,7 +421,7 @@ export function DashboardLayout() {
               {userMenuOpen ? (
                 <div
                   role="menu"
-                  className="absolute right-0 top-full z-50 mt-1 w-[min(100vw-1rem,13.5rem)] rounded-lg border border-material-outline bg-material-surface py-1 text-sm shadow-lg"
+                  className="absolute right-0 top-full z-[10002] mt-1 w-[min(100vw-1rem,13.5rem)] rounded-lg border border-material-outline bg-material-surface py-1 text-sm shadow-lg"
                 >
                   <button
                     type="button"
@@ -817,11 +455,295 @@ export function DashboardLayout() {
                   </button>
                 </div>
               ) : null}
-              </div>
             </div>
           </div>
-        </header>
+        </div>
+      </header>
 
+      <div className="h-16 shrink-0" aria-hidden />
+
+      <div className="relative flex min-h-0 flex-1">
+        <aside
+          className={`fixed bottom-0 left-0 top-16 z-[40] flex flex-col overflow-y-auto overflow-x-hidden border-r border-material-outline bg-material-surface text-material-emphasis shadow-[2px_0_12px_rgba(15,23,42,0.08)] transition-[width] duration-200 ease-out ${
+            sidebarWide ? 'w-[min(100%,18rem)] sm:w-72' : 'w-14'
+          }`}
+        >
+          {modoPanel && sidebarWide ? (
+            <div className="border-b border-material-outline bg-material-surface px-3 py-2 text-[11px] leading-snug text-material-emphasis sm:hidden">
+              <p className="truncate">
+                <span className="font-semibold">Nombre:</span> {textoNombreCompleto}
+              </p>
+              <p className="truncate">
+                <span className="font-semibold">Código:</span> {textoCodigo}{' '}
+                <span className="text-material-outline-strong">|</span>{' '}
+                <span className="font-semibold">Usuario:</span> {textoUsuario}
+              </p>
+            </div>
+          ) : null}
+          <div
+            className={`border-b border-material-outline bg-material-surface-variant ${sidebarWide ? 'px-2 py-1.5' : 'sr-only'}`}
+          >
+            <p className="text-center text-[10px] font-medium leading-snug text-black">
+              {modoPanel ? 'Inventario en consulta y carrito' : 'Inventario, stock y POS.'}
+            </p>
+          </div>
+          <div className={sidebarWide ? 'p-3' : 'px-1 py-2'}>
+              <nav className="space-y-1">
+                <NavLink
+                  to={dashboardLink.to}
+                  title={dashboardLink.label}
+                  className={({ isActive }) =>
+                    `flex items-center rounded-lg py-2 text-sm ${
+                      sidebarWide ? 'justify-start gap-2 px-3' : 'justify-center px-0'
+                    } ${isActive ? navActiveFill : navInactive}`
+                  }
+                >
+                  <DashboardNavIcon size={16} className="shrink-0" />
+                  {sidebarWide ? dashboardLink.label : null}
+                </NavLink>
+
+                {can('proveedores') ? (
+                  <div className="pt-1">
+                    <NavLink
+                      to="/proveedores"
+                      title="Proveedores"
+                      className={({ isActive }) =>
+                        `flex items-center rounded-lg py-2 text-sm font-medium ${
+                          sidebarWide ? 'justify-start gap-2 px-3' : 'justify-center px-0'
+                        } ${isActive ? navActiveFill : navInactive}`
+                      }
+                    >
+                      <Truck size={16} className="shrink-0" aria-hidden />
+                      {sidebarWide ? <span className="truncate">Proveedores</span> : null}
+                    </NavLink>
+                  </div>
+                ) : null}
+
+                {can('inventario') || can('inventario_bodega_1') || can('inventario_bodega_2') || can('inventario_bodega_3') ? (
+                  <div className="pt-1">
+                    <NavLink
+                      to="/inventario"
+                      title="Inventario"
+                      className={({ isActive }) =>
+                        `flex items-center rounded-lg py-2 text-sm font-medium ${
+                          sidebarWide ? 'justify-start gap-2 px-3' : 'justify-center px-0'
+                        } ${(isActive || navInventarioActivo) ? navActiveFill : navInactive}`
+                      }
+                    >
+                      <Boxes size={16} className="shrink-0" aria-hidden />
+                      {sidebarWide ? <span className="truncate">Inventario</span> : null}
+                    </NavLink>
+                  </div>
+                ) : null}
+
+                {can('estadisticas') ? (
+                  <div className="pt-1">
+                    <NavLink
+                      to="/estadisticas/power-bi"
+                      title="Estadísticas"
+                      className={({ isActive }) =>
+                        `flex items-center rounded-lg py-2 text-sm font-medium ${
+                          sidebarWide ? 'justify-start gap-2 px-3' : 'justify-center px-0'
+                        } ${(isActive || navEstadisticasActivo) ? navActiveFill : navInactive}`
+                      }
+                    >
+                      <Presentation size={16} className="shrink-0" aria-hidden />
+                      {sidebarWide ? <span className="truncate">Estadísticas</span> : null}
+                    </NavLink>
+                  </div>
+                ) : null}
+
+                {can('reportes') ? (
+                    <div className="pt-1">
+                      {sidebarWide ? (
+                        <button
+                          type="button"
+                          onClick={() => setReportesOpen((o) => !o)}
+                          aria-expanded={reportesOpen}
+                          className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium ${
+                            navReportesActivo ? navActiveFill : navInactive
+                          }`}
+                        >
+                          <span className="flex items-center gap-2">
+                            <FileText size={16} aria-hidden />
+                            Reportes
+                          </span>
+                          <ChevronDown
+                            size={16}
+                            className={`shrink-0 transition-transform ${reportesOpen ? 'rotate-180' : ''}`}
+                            aria-hidden
+                          />
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          title="Reportes"
+                          onClick={() => navigate(defaultReportesTo)}
+                          className={`flex w-full items-center justify-center rounded-lg py-2 ${
+                            navReportesActivo ? navActiveFill : navInactive
+                          }`}
+                        >
+                          <FileText size={16} aria-hidden />
+                        </button>
+                      )}
+                      {sidebarWide && reportesOpen ? (
+                        <div className="mt-1 space-y-0.5 border-l-2 border-material-outline-strong pl-2" aria-label="Reportes">
+                          {reportesSub.map(({ to, label, Icon }) => (
+                            <NavLink
+                              key={to}
+                              to={to}
+                              end
+                              title={label}
+                              className={({ isActive }) =>
+                                `flex items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium ${
+                                  isActive ? 'bg-boutique-50 text-boutique-600' : 'text-black hover:bg-material-surface-variant'
+                                }`
+                              }
+                            >
+                              <Icon size={15} className="shrink-0" aria-hidden />
+                              {label}
+                            </NavLink>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                ) : null}
+
+                {can('pos') ? (
+                    <div className="pt-1">
+                      {sidebarWide ? (
+                        <button
+                          type="button"
+                          onClick={() => setPosOpen((o) => !o)}
+                          aria-expanded={posOpen}
+                          className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium ${
+                            navPosActivo ? navActiveFill : navInactive
+                          }`}
+                        >
+                          <span className="flex items-center gap-2">
+                            <Store size={16} aria-hidden />
+                            POS
+                          </span>
+                          <ChevronDown
+                            size={16}
+                            className={`shrink-0 transition-transform ${posOpen ? 'rotate-180' : ''}`}
+                            aria-hidden
+                          />
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          title="POS"
+                          onClick={() => navigate(defaultPosTo)}
+                          className={`flex w-full items-center justify-center rounded-lg py-2 ${
+                            navPosActivo ? navActiveFill : navInactive
+                          }`}
+                        >
+                          <Store size={16} aria-hidden />
+                        </button>
+                      )}
+                      {sidebarWide && posOpen ? (
+                        <div className="mt-1 space-y-0.5 border-l-2 border-material-outline-strong pl-2" aria-label="POS">
+                          {posMenuSub.map(({ to, label, Icon }) => (
+                            <NavLink
+                              key={to}
+                              to={to}
+                              end={to === '/pos/vender'}
+                              title={label}
+                              className={({ isActive }) =>
+                                `flex items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium ${
+                                  isActive ? 'bg-boutique-50 text-boutique-600' : 'text-black hover:bg-material-surface-variant'
+                                }`
+                              }
+                            >
+                              <Icon size={15} className="shrink-0" aria-hidden />
+                              {label}
+                            </NavLink>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                ) : null}
+
+                {!modoPanel ? (
+                    <div className="pt-1">
+                      {sidebarWide ? (
+                        <button
+                          type="button"
+                          onClick={() => setUsuarioOpen((o) => !o)}
+                          aria-expanded={usuarioOpen}
+                          className={`flex w-full items-center justify-between gap-2 rounded-lg px-3 py-2 text-left text-sm font-medium ${
+                            navUsuarioActivo ? navActiveFill : navInactive
+                          }`}
+                        >
+                          <span className="flex items-center gap-2">
+                            <Users size={16} aria-hidden />
+                            Usuario
+                          </span>
+                          <ChevronDown
+                            size={16}
+                            className={`shrink-0 transition-transform ${usuarioOpen ? 'rotate-180' : ''}`}
+                            aria-hidden
+                          />
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          title="Usuario"
+                          onClick={() => navigate(defaultUsuarioTo)}
+                          className={`flex w-full items-center justify-center rounded-lg py-2 ${
+                            navUsuarioActivo ? navActiveFill : navInactive
+                          }`}
+                        >
+                          <Users size={16} aria-hidden />
+                        </button>
+                      )}
+                      {sidebarWide && usuarioOpen ? (
+                        <div
+                          className="mt-1 space-y-0.5 border-l-2 border-material-outline-strong pl-2"
+                          aria-label="Usuario"
+                        >
+                          {usuarioMenuSub.map(({ to, label, Icon }) => (
+                            <NavLink
+                              key={to}
+                              to={to}
+                              title={label}
+                              className={({ isActive }) =>
+                                `flex items-center gap-2 rounded-lg px-2 py-2 text-xs font-medium ${
+                                  isActive ? 'bg-boutique-50 text-boutique-600' : 'text-black hover:bg-material-surface-variant'
+                                }`
+                              }
+                            >
+                              <Icon size={15} className="shrink-0" aria-hidden />
+                              {label}
+                            </NavLink>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                ) : null}
+              </nav>
+              <div className="mt-3 border-t border-material-outline pt-2">
+                <button
+                  type="button"
+                  onClick={logout}
+                  className={`flex w-full items-center rounded-lg py-2 text-sm font-medium ${
+                    sidebarWide ? 'justify-start gap-2 px-3' : 'justify-center px-0'
+                  } text-black hover:bg-material-surface-variant`}
+                  title="Cerrar sesión"
+                >
+                  <LogOut size={16} className="shrink-0" aria-hidden />
+                  {sidebarWide ? <span className="truncate">Cerrar sesión</span> : null}
+                </button>
+              </div>
+            </div>
+          </aside>
+
+        <main
+          className={`min-w-0 flex-1 overflow-y-auto transition-[padding] duration-200 ease-out ${
+            sidebarWide ? 'pl-[min(100%,18rem)] sm:pl-72' : 'pl-14'
+          }`}
+        >
         <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-3 py-4 sm:gap-4 sm:px-4 lg:px-5 lg:py-5">
         <div className={`min-w-0 flex-1 ${mostrarEncabezadoPanel ? 'space-y-6' : ''}`}>
           {mostrarEncabezadoPanel ? (
@@ -851,7 +773,8 @@ export function DashboardLayout() {
             <ShoppingCart size={22} strokeWidth={2.25} aria-hidden />
           </button>
         ) : null}
-      </div>
+        </div>
+        </main>
       </div>
 
       {pwdModalOpen ? (

@@ -19,7 +19,7 @@ import {
 } from './personnelFormSchema'
 import { PersonnelAltaModal } from './PersonnelAltaModal'
 import { useConfirm } from '../../shared/ui/ConfirmProvider'
-import { notifyError } from '../../shared/lib/notify'
+import { notifyError, notifySuccess } from '../../shared/lib/notify'
 
 const estadoEtiqueta: Record<string, string> = {
   ACTIVO: 'Activo',
@@ -95,6 +95,7 @@ export function TrabajadoresPage() {
   const deleteMutation = useMutation({
     mutationFn: deletePersonnelRecord,
     onSuccess: (_, id) => {
+      notifySuccess('Trabajador eliminado del registro.')
       queryClient.setQueryData<PersonnelRecord[]>(personnelQueryKey, (old) => {
         const base = Array.isArray(old) ? old : []
         return base.filter((r) => r.id !== id)

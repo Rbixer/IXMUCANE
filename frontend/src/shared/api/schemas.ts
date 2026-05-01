@@ -72,6 +72,8 @@ export const inventoryItemSchema = z.object({
   packages_per_fardo: z.coerce.number().int().min(1).default(1),
   hierarchy: stockHierarchySchema.optional(),
   unit_price: priceString,
+  package_price: priceString.optional().default('0.00'),
+  fardo_price: priceString.optional().default('0.00'),
   cost_price: priceString.optional().default('0.00'),
   branch: idCoerce,
   line: inventoryLineSchema,
@@ -172,6 +174,11 @@ export const posSaleReadSchema = z.object({
   id: idCoerce,
   branch: idCoerce,
   branch_name: z.string(),
+  customer: z.union([z.null(), idCoerce]).optional().default(null),
+  customer_name: z.string().optional().default(''),
+  customer_phone: z.string().optional().default(''),
+  customer_email: z.string().optional().default(''),
+  customer_address: z.string().optional().default(''),
   payment_method: paymentMethodSchema,
   total: priceString,
   created_at: z.string(),
@@ -182,6 +189,11 @@ export const posSaleListItemSchema = z.object({
   id: idCoerce,
   branch: idCoerce,
   branch_name: z.string(),
+  customer: z.union([z.null(), idCoerce]).optional().default(null),
+  customer_name: z.string().optional().default(''),
+  customer_phone: z.string().optional().default(''),
+  customer_email: z.string().optional().default(''),
+  customer_address: z.string().optional().default(''),
   payment_method: paymentMethodSchema,
   total: priceString,
   created_at: z.string(),
@@ -222,6 +234,61 @@ export const posDashboardSummarySchema = z.object({
 
 export function parsePosDashboardSummary(data: unknown) {
   return parseApi(posDashboardSummarySchema, data, 'pos/sales/dashboard-summary')
+}
+
+const posQuoteLineReadSchema = z.object({
+  id: idCoerce,
+  inventory_item: idCoerce,
+  product_name: z.string(),
+  sku: z.string(),
+  quantity: z.coerce.number().int().min(1),
+  unit_kind: z.enum(['unit', 'package', 'fardo']),
+  line_unit_price: priceString,
+})
+
+export const posQuoteReadSchema = z.object({
+  id: idCoerce,
+  customer_name: z.string().optional().default(''),
+  customer_nit: z.string().optional().default(''),
+  notes: z.string().optional().default(''),
+  total: priceString,
+  created_at: z.string(),
+  lines: z.array(posQuoteLineReadSchema),
+})
+
+export const posQuoteListItemSchema = z.object({
+  id: idCoerce,
+  customer_name: z.string().optional().default(''),
+  customer_nit: z.string().optional().default(''),
+  notes: z.string().optional().default(''),
+  total: priceString,
+  created_at: z.string(),
+  lines_count: z.coerce.number().int().min(0),
+})
+
+export function parsePosQuoteRead(data: unknown) {
+  return parseApi(posQuoteReadSchema, data, 'pos/quote')
+}
+
+export function parsePosQuotesList(data: unknown) {
+  return parseApi(z.array(posQuoteListItemSchema), data, 'pos/quotes')
+}
+
+export const posCustomerSchema = z.object({
+  id: idCoerce,
+  name: z.string(),
+  phone: z.string().optional().default(''),
+  email: z.string().optional().default(''),
+  address: z.string().optional().default(''),
+  created_at: z.string().optional(),
+})
+
+export function parsePosCustomersList(data: unknown) {
+  return parseApi(z.array(posCustomerSchema), data, 'pos/customers')
+}
+
+export function parsePosCustomer(data: unknown) {
+  return parseApi(posCustomerSchema, data, 'pos/customer')
 }
 
 export function parseProductCategoriesList(data: unknown) {

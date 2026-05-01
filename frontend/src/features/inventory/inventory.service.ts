@@ -42,6 +42,8 @@ function appendInventoryFormFields(fd: FormData, payload: CreateInventoryPayload
   fd.append('units_per_package', String(Math.max(1, Math.floor(payload.units_per_package) || 1)))
   fd.append('packages_per_fardo', String(Math.max(1, Math.floor(payload.packages_per_fardo) || 1)))
   fd.append('unit_price', String(payload.unit_price))
+  fd.append('package_price', String(payload.package_price ?? '0'))
+  fd.append('fardo_price', String(payload.fardo_price ?? '0'))
   fd.append('cost_price', String(payload.cost_price ?? '0'))
   fd.append('branch', String(payload.branch))
   fd.append('line', payload.line)
@@ -68,6 +70,8 @@ export async function createInventoryItem(
     ...payload,
     units_per_package: Math.max(1, Math.floor(payload.units_per_package) || 1),
     packages_per_fardo: Math.max(1, Math.floor(payload.packages_per_fardo) || 1),
+    package_price: payload.package_price ?? '0',
+    fardo_price: payload.fardo_price ?? '0',
     cost_price: payload.cost_price ?? '0',
     category: payload.category != null && payload.category > 0 ? payload.category : null,
   })
@@ -90,6 +94,8 @@ export async function updateInventoryItem(
     ...payload,
     units_per_package: Math.max(1, Math.floor(payload.units_per_package) || 1),
     packages_per_fardo: Math.max(1, Math.floor(payload.packages_per_fardo) || 1),
+    package_price: payload.package_price ?? '0',
+    fardo_price: payload.fardo_price ?? '0',
     cost_price: payload.cost_price ?? '0',
     category: payload.category != null && payload.category > 0 ? payload.category : null,
   })

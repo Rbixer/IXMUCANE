@@ -1,15 +1,19 @@
-import { type FormEvent, useEffect, useState } from 'react'
+import { Fragment, type FormEvent, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Trash2 } from 'lucide-react'
 import { listBranches } from '../branches/branches.service'
 import { listInventory } from '../inventory/inventory.service'
-import { createPosSale, deletePosSale, listPosSales } from '../pos/pos.service'
+import { pickPrimaryInventoryBranchId } from '../../shared/lib/defaultBranch'
+import { SaleReceiptModal } from '../pos/SaleReceiptModal'
+import { createPosSale, deletePosSale, listPosCustomers, listPosSales } from '../pos/pos.service'
+import type { PosCustomer, PosSale } from '../pos/pos.service'
 import { esPanelSoloLecturaEnModulo } from '../../shared/lib/accesoSesion'
 import { Card } from '../../shared/ui/Card'
 import { formatHierarchyLabel, splitStockHierarchy } from '../../shared/lib/unitHierarchy'
 import type { InventoryItem } from '../../shared/types/domain'
 import { ProductSearchAddPanel } from '../inventory/InventoryProductSearch'
+import { notifyError, notifySuccess } from '../../shared/lib/notify'
 import { useConfirm } from '../../shared/ui/ConfirmProvider'
 
 const PAYMENT_LABELS: Record<'cash' | 'card' | 'other', string> = {
@@ -27,15 +31,21 @@ export function VentasPage() {
   const [branchId, setBranchId] = useState<number>(0)
   const [lines, setLines] = useState<LineDraft[]>([])
   const [payment, setPayment] = useState<'cash' | 'card' | 'other'>('cash')
+  const [customerSearch, setCustomerSearch] = useState('')
+  const [selectedCustomerId, setSelectedCustomerId] = useState<number | null>(null)
+  const [customerName, setCustomerName] = useState('')
+  const [customerPhone, setCustomerPhone] = useState('')
+  const [customerEmail, setCustomerEmail] = useState('')
+  const [customerAddress, setCustomerAddress] = useState('')
   const [formError, setFormError] = useState('')
+  const [receiptSale, setReceiptSale] = useState<PosSale | null>(null)
 
   const branchesQuery = useQuery({ queryKey: ['branches'], queryFn: listBranches })
 
   useEffect(() => {
-    const first = branchesQuery.data?.find((b) => b.id > 0)?.id
-    if (first != null && first > 0 && branchId === 0) {
-      setBranchId(first)
-    }
+    if (branchId !== 0) return
+    const preferredId = pickPrimaryInventoryBranchId(branchesQuery.data ?? [])
+    if (preferredId != null && preferredId > 0) setBranchId(preferredId)
   }, [branchesQuery.data, branchId])
 
   const invQuery = useQuery({
@@ -48,14 +58,35 @@ export function VentasPage() {
     queryKey: ['pos', 'sales', branchId],
     queryFn: () => listPosSales(branchId > 0 ? branchId : undefined),
   })
+  const customersQuery = useQuery({
+    queryKey: ['pos', 'customers', customerSearch.trim().toLowerCase()],
+    queryFn: () => listPosCustomers(customerSearch),
+    staleTime: 30_000,
+  })
 
   const items = invQuery.data ?? []
 
+  const itemById = useMemo(() => new Map(items.map((i) => [i.id, i])), [items])
+
+  const estimatedTotal = useMemo(() => {
+    let sum = 0
+    for (const line of lines) {
+      const it = itemById.get(line.inventory_item)
+      if (!it) continue
+      const unit = Number(String(it.unit_price).trim())
+      if (Number.isFinite(unit)) sum += unit * line.quantity
+    }
+    return sum
+  }, [lines, itemById])
+
+  const totalUnitsInSale = useMemo(() => lines.reduce((acc, l) => acc + l.quantity, 0), [lines])
+
   const saleMutation = useMutation({
     mutationFn: createPosSale,
-    onSuccess: () => {
+    onSuccess: (sale) => {
       setFormError('')
       setLines([])
+      setReceiptSale(sale)
       void queryClient.invalidateQueries({ queryKey: ['pos', 'sales'] })
       void queryClient.invalidateQueries({ queryKey: ['inventory'] })
       void queryClient.invalidateQueries({ queryKey: ['inventory-summary'] })
@@ -69,6 +100,7 @@ export function VentasPage() {
   const deleteSaleMut = useMutation({
     mutationFn: deletePosSale,
     onSuccess: async () => {
+      notifySuccess('Venta eliminada. El stock se devolvió al inventario.')
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['pos', 'sales'] }),
         queryClient.invalidateQueries({ queryKey: ['inventory'] }),
@@ -77,36 +109,50 @@ export function VentasPage() {
         queryClient.invalidateQueries({ queryKey: ['reports', 'sistema-pos'] }),
       ])
     },
-    onError: (e: Error) => setFormError(e.message),
+    onError: (e: Error) => {
+      setFormError(e.message)
+      notifyError(e.message)
+    },
   })
 
-  const addLine = () => {
-    if (!items.length) return
-    const first = items[0]
-    setLines((prev) => [...prev, { inventory_item: first.id, quantity: 1 }])
-  }
-
-  const addProductFromSearch = (item: InventoryItem) => {
+  const addProductFromSearch = (item: InventoryItem, addQty: number = 1) => {
     if (item.quantity <= 0) return
+    const q = Math.max(1, Math.min(Math.floor(Number(addQty)) || 1, item.quantity))
     setLines((prev) => {
       const ix = prev.findIndex((l) => l.inventory_item === item.id)
       if (ix >= 0) {
         return prev.map((l, i) => {
           if (i !== ix) return l
-          const nextQty = l.quantity + 1
-          return { ...l, quantity: Math.min(item.quantity, Math.max(1, nextQty)) }
+          const nextQty = l.quantity + q
+          return { ...l, quantity: Math.min(item.quantity, nextQty) }
         })
       }
-      return [...prev, { inventory_item: item.id, quantity: 1 }]
+      return [...prev, { inventory_item: item.id, quantity: q }]
     })
   }
 
-  const updateLine = (index: number, patch: Partial<LineDraft>) => {
-    setLines((prev) => prev.map((row, i) => (i === index ? { ...row, ...patch } : row)))
+  const setLineQuantityFromStock = (index: number, raw: number) => {
+    setLines((prev) => {
+      const row = prev[index]
+      if (!row) return prev
+      const it = itemById.get(row.inventory_item)
+      if (!it) return prev
+      const q = Math.max(1, Math.min(Math.floor(Number(raw)) || 1, it.quantity))
+      return prev.map((line, i) => (i === index ? { ...line, quantity: q } : line))
+    })
   }
 
   const removeLine = (index: number) => {
     setLines((prev) => prev.filter((_, i) => i !== index))
+  }
+
+  const onPickCustomer = (c: PosCustomer) => {
+    setSelectedCustomerId(c.id)
+    setCustomerSearch(c.name)
+    setCustomerName(c.name || '')
+    setCustomerPhone(c.phone || '')
+    setCustomerEmail(c.email || '')
+    setCustomerAddress(c.address || '')
   }
 
   const submit = (e: FormEvent) => {
@@ -117,7 +163,7 @@ export function VentasPage() {
       return
     }
     if (branchId <= 0) {
-      setFormError('No hay tienda configurada en el sistema.')
+      setFormError('No hay inventario configurado en el sistema.')
       return
     }
     if (!lines.length) {
@@ -130,6 +176,11 @@ export function VentasPage() {
     }))
     saleMutation.mutate({
       branch: branchId,
+      customer: selectedCustomerId,
+      customer_name: customerName.trim(),
+      customer_phone: customerPhone.trim(),
+      customer_email: customerEmail.trim(),
+      customer_address: customerAddress.trim(),
       payment_method: payment,
       lines: normalized,
     })
@@ -137,6 +188,7 @@ export function VentasPage() {
 
   return (
     <div className="space-y-6">
+      <SaleReceiptModal sale={receiptSale} onClose={() => setReceiptSale(null)} />
       <Card
         title="Ventas POS"
         subtitle="Registra una venta: descuenta el stock en unidades (pieza). La jerarquia fardo / paquete se muestra para lectura y en reportes; el descuento siempre es en unidades base."
@@ -146,7 +198,7 @@ export function VentasPage() {
           <Link to="/inventario/productos" className="font-semibold text-[#c40000] underline underline-offset-2 hover:text-red-800">
             Inventario · Productos
           </Link>
-          ; al confirmar la venta se actualizan Productos, Inventario general y POS · Facturas.
+          ; al confirmar la venta se actualizan Productos, inventario y POS · Facturas.
         </p>
         {soloLecturaPos ? (
           <p className="text-sm text-amber-800">
@@ -161,87 +213,203 @@ export function VentasPage() {
           {branchId > 0 ? (
             <div>
               {!invQuery.isLoading && items.length > 0 ? (
-                <div className="mb-4">
+                <div className="mb-2">
                   <ProductSearchAddPanel
                     items={items}
                     disabled={soloLecturaPos}
+                    showQuantityBeforeAdd
+                    title="Búsqueda de productos"
                     onAdd={addProductFromSearch}
                   />
                 </div>
               ) : null}
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                <span className="text-xs font-semibold text-slate-700">Lineas</span>
-                <button
-                  type="button"
-                  disabled={soloLecturaPos || !items.length}
-                  onClick={addLine}
-                  className="rounded-md border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-50"
-                >
-                  Anadir linea
-                </button>
-              </div>
               {invQuery.isLoading ? (
                 <p className="text-sm text-slate-600">Cargando inventario…</p>
               ) : !items.length ? (
                 <p className="text-sm text-amber-800">No hay productos en inventario para el catálogo por defecto.</p>
               ) : (
-                <ul className="space-y-2">
-                  {lines.map((line, idx) => (
-                    <li
-                      key={`${line.inventory_item}-${idx}`}
-                      className="flex flex-wrap items-end gap-2 rounded-lg border border-slate-200 bg-slate-50/80 p-2"
-                    >
-                      <div className="min-w-[12rem] flex-1">
-                        <label className="mb-0.5 block text-[10px] font-semibold uppercase text-slate-500">
-                          Producto
-                        </label>
-                        <select
-                          className="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-xs"
-                          value={line.inventory_item}
-                          onChange={(e) => updateLine(idx, { inventory_item: Number(e.target.value) })}
-                        >
-                          {items.map((it) => {
-                            const { fardos, paquetes, unidades } = splitStockHierarchy(
-                              it.quantity,
-                              it.units_per_package ?? 1,
-                              it.packages_per_fardo ?? 1,
-                            )
-                            const j = formatHierarchyLabel(fardos, paquetes, unidades)
-                            return (
-                              <option key={it.id} value={it.id}>
-                                {it.sku} — {it.name} (stock {it.quantity} u., {j})
-                              </option>
-                            )
-                          })}
-                        </select>
+                <div className="rounded-xl border border-sky-200 bg-gradient-to-b from-sky-50 via-cyan-50/40 to-sky-50/90 p-3 shadow-sm ring-1 ring-sky-100/80">
+                  <div className="mb-3 border-b border-sky-200/90 pb-2">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-sky-900">
+                      Productos en esta venta
+                    </span>
+                    {lines.length > 0 ? (
+                      <p className="mt-0.5 text-[11px] text-sky-800/90">
+                        {lines.length} línea(s) de producto · {totalUnitsInSale} unidad(es) total
+                      </p>
+                    ) : null}
+                  </div>
+                  {lines.length === 0 ? (
+                    <p className="py-4 text-center text-sm text-sky-800/80">
+                      Elija cantidad y pulse Añadir en la búsqueda para armar la venta.
+                    </p>
+                  ) : (
+                    <Fragment>
+                    <ul className="space-y-2">
+                      {lines.map((line, idx) => {
+                        const it = itemById.get(line.inventory_item)
+                        if (!it) return null
+                        const { fardos, paquetes, unidades } = splitStockHierarchy(
+                          it.quantity,
+                          it.units_per_package ?? 1,
+                          it.packages_per_fardo ?? 1,
+                        )
+                        const stockLabel = formatHierarchyLabel(fardos, paquetes, unidades)
+                        const unit = Number(String(it.unit_price).trim())
+                        const lineTotal =
+                          Number.isFinite(unit) && line.quantity > 0
+                            ? unit * line.quantity
+                            : 0
+                        return (
+                          <li
+                            key={line.inventory_item}
+                            className="flex flex-wrap items-end gap-3 rounded-lg border border-sky-200/90 bg-white/95 p-3 shadow-sm ring-1 ring-sky-100/60"
+                          >
+                            <div className="min-w-0 flex-1 border-l-4 border-sky-400 pl-3">
+                              <p className="font-mono text-[10px] text-sky-700/90">{it.sku}</p>
+                              <p className="text-sm font-semibold text-sky-950">{it.name}</p>
+                              <p className="mt-0.5 text-[10px] text-sky-800/75">
+                                Stock actual {it.quantity} u. ({stockLabel}) · max. venta {it.quantity} u.
+                              </p>
+                            </div>
+                            <div className="flex flex-wrap items-end gap-2">
+                              <div>
+                                <label className="mb-0.5 block text-[10px] font-semibold uppercase text-sky-800">
+                                  Cantidad
+                                </label>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={it.quantity}
+                                  disabled={soloLecturaPos}
+                                  className="w-20 rounded-md border border-sky-300 bg-sky-50/50 px-2 py-1.5 text-sm tabular-nums text-sky-950 outline-none ring-sky-300/40 focus:border-sky-500 focus:ring-2 disabled:bg-slate-100"
+                                  value={line.quantity}
+                                  onChange={(e) => setLineQuantityFromStock(idx, Number(e.target.value))}
+                                />
+                              </div>
+                              <div className="pb-1 text-right">
+                                <p className="text-[10px] font-semibold uppercase text-sky-800">Subtotal</p>
+                                <p className="text-sm font-semibold tabular-nums text-sky-950">
+                                  Q{' '}
+                                  {lineTotal.toLocaleString('es-GT', {
+                                    minimumFractionDigits: 2,
+                                    maximumFractionDigits: 2,
+                                  })}
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => removeLine(idx)}
+                                className="rounded-md px-2 py-1 text-xs font-semibold text-red-700 underline hover:bg-red-50"
+                              >
+                                Quitar
+                              </button>
+                            </div>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                    <footer className="mt-4 border-t border-dashed border-sky-300/90 pt-4">
+                      <div className="mb-3 space-y-1 rounded-lg border border-sky-100 bg-sky-100/40 px-3 py-2 font-mono text-[11px] text-sky-900">
+                        <div className="flex justify-between gap-4">
+                          <span className="uppercase tracking-wide text-sky-800/90">Suma de líneas</span>
+                          <span className="tabular-nums font-semibold text-sky-950">
+                            Q{' '}
+                            {estimatedTotal.toLocaleString('es-GT', {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}
+                          </span>
+                        </div>
+                        <div className="flex justify-between gap-4 text-sky-800/85">
+                          <span>Productos distintos / unidades</span>
+                          <span className="tabular-nums">
+                            {lines.length} / {totalUnitsInSale}
+                          </span>
+                        </div>
                       </div>
-                      <div className="w-24">
-                        <label className="mb-0.5 block text-[10px] font-semibold uppercase text-slate-500">
-                          Cantidad
-                        </label>
-                        <input
-                          type="number"
-                          min={1}
-                          className="w-full rounded border border-slate-300 px-2 py-1.5 text-xs"
-                          value={line.quantity}
-                          onChange={(e) => updateLine(idx, { quantity: Number(e.target.value) })}
-                        />
+                      <div className="flex items-stretch justify-between gap-4 overflow-hidden rounded-lg border border-sky-300 bg-gradient-to-r from-white to-sky-50/70 shadow-md ring-1 ring-sky-100">
+                        <div className="w-1.5 shrink-0 bg-gradient-to-b from-sky-400 to-cyan-500" aria-hidden />
+                        <div className="flex flex-1 flex-wrap items-center justify-between gap-3 py-3 pr-4">
+                          <div>
+                            <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-sky-900">
+                              Total a pagar
+                            </p>
+                            <p className="mt-0.5 text-[11px] text-sky-800/80">Vista previa antes de registrar</p>
+                          </div>
+                          <p className="text-right text-2xl font-bold tabular-nums tracking-tight text-sky-950">
+                            Q{' '}
+                            {estimatedTotal.toLocaleString('es-GT', {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}
+                          </p>
+                        </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => removeLine(idx)}
-                        className="text-xs font-semibold text-red-700 underline"
-                      >
-                        Quitar
-                      </button>
-                    </li>
-                  ))}
-                </ul>
+                    </footer>
+                    </Fragment>
+                  )}
+                </div>
               )}
             </div>
           ) : (
             <p className="text-sm text-amber-800">Cargando…</p>
           )}
+          <div>
+            <label className="mb-1 block text-xs font-semibold text-slate-700">Cliente (buscar por nombre)</label>
+            <div className="relative max-w-xl">
+              <input
+                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                placeholder="Escriba para buscar cliente..."
+                value={customerSearch}
+                onChange={(e) => {
+                  setCustomerSearch(e.target.value)
+                  setSelectedCustomerId(null)
+                }}
+              />
+              {customerSearch.trim().length > 0 && (customersQuery.data ?? []).length > 0 ? (
+                <div className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-lg border border-slate-200 bg-white shadow-lg">
+                  {(customersQuery.data ?? []).slice(0, 8).map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => onPickCustomer(c)}
+                      className="block w-full border-b border-slate-100 px-3 py-2 text-left text-sm hover:bg-slate-50"
+                    >
+                      <span className="font-medium text-slate-900">{c.name}</span>
+                      <span className="ml-2 text-xs text-slate-500">{c.phone || c.email || 'Sin contacto'}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            <div className="mt-2 grid gap-2 md:grid-cols-2">
+              <input
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                placeholder="Nombre del cliente"
+                value={customerName}
+                onChange={(e) => setCustomerName(e.target.value)}
+              />
+              <input
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                placeholder="Teléfono"
+                value={customerPhone}
+                onChange={(e) => setCustomerPhone(e.target.value)}
+              />
+              <input
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                placeholder="Correo"
+                value={customerEmail}
+                onChange={(e) => setCustomerEmail(e.target.value)}
+              />
+              <input
+                className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                placeholder="Dirección"
+                value={customerAddress}
+                onChange={(e) => setCustomerAddress(e.target.value)}
+              />
+            </div>
+          </div>
           <div>
             <label className="mb-1 block text-xs font-semibold text-slate-700">Pago</label>
             <select

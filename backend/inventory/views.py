@@ -10,6 +10,7 @@ from rest_framework.exceptions import ValidationError
 from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
+from rest_framework import status
 from pos.models import Sale, SaleLine
 from stock.models import StockMovement
 from suppliers.models import PurchaseLine, PurchaseOrder
@@ -199,3 +200,27 @@ def inventory_locales_count(request):
     from branches.models import Branch
 
     return Response({'count': Branch.objects.filter(is_active=True).count()})
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def inventory_transfer_by_branch(request):
+    """
+    Traslada en lote productos de un punto de inventario a otro.
+    Body JSON: { "from_branch_id": number, "to_branch_id": number }
+    """
+    from_raw = request.data.get('from_branch_id')
+    to_raw = request.data.get('to_branch_id')
+    try:
+        from_id = int(from_raw)
+        to_id = int(to_raw)
+    except (TypeError, ValueError):
+        return Response({'detail': 'from_branch_id y to_branch_id deben ser enteros positivos.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if from_id <= 0 or to_id <= 0:
+        return Response({'detail': 'from_branch_id y to_branch_id deben ser mayores que 0.'}, status=status.HTTP_400_BAD_REQUEST)
+    if from_id == to_id:
+        return Response({'detail': 'El origen y destino no pueden ser iguales.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    updated = InventoryItem.objects.filter(branch_id=from_id).update(branch_id=to_id)
+    return Response({'moved': updated, 'from_branch_id': from_id, 'to_branch_id': to_id})

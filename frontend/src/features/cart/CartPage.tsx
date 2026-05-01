@@ -24,9 +24,10 @@ export function CartPage() {
     [items],
   )
 
-  const handleRemove = (id: number) => {
+  const handleRemove = (id: number, name: string) => {
     cartStorage.remove(id)
     setItems(cartStorage.list())
+    notifySuccess(`«${name}» quitado del carrito.`)
   }
 
   const handleCheckout = (event: FormEvent<HTMLFormElement>) => {
@@ -55,7 +56,7 @@ export function CartPage() {
                   </p>
                   <button
                     type="button"
-                    onClick={() => handleRemove(item.id)}
+                    onClick={() => handleRemove(item.id, item.name)}
                     aria-label={`Quitar ${item.name} del carrito`}
                     title="Quitar del carrito"
                     className="inline-flex items-center justify-center rounded-md bg-red-600 p-2 text-white transition hover:bg-red-700"

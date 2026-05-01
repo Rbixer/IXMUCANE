@@ -25,8 +25,16 @@ from inventory.models import InventoryItem
 from inventory.unit_hierarchy import split_stock_hierarchy
 from stock.models import StockMovement
 
-from .models import Sale
-from .serializers import SaleCreateSerializer, SaleListSerializer, SaleReadSerializer
+from .models import Customer, Quote, Sale
+from .serializers import (
+    CustomerSerializer,
+    QuoteCreateSerializer,
+    QuoteListSerializer,
+    QuoteReadSerializer,
+    SaleCreateSerializer,
+    SaleListSerializer,
+    SaleReadSerializer,
+)
 
 
 @api_view(['GET'])
@@ -225,3 +233,49 @@ class SaleViewSet(
                     ),
                 )
             instance.delete()
+
+
+class CustomerViewSet(
+    mixins.ListModelMixin,
+    mixins.CreateModelMixin,
+    mixins.RetrieveModelMixin,
+    viewsets.GenericViewSet,
+):
+    """Clientes POS: alta y listado con filtro por nombre."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = CustomerSerializer
+
+    def get_queryset(self):
+        qs = Customer.objects.all().order_by('name', 'id')
+        q = (self.request.query_params.get('q') or '').strip()
+        if q:
+            qs = qs.filter(name__icontains=q)
+        return qs
+
+
+class QuoteViewSet(
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.CreateModelMixin,
+    viewsets.GenericViewSet,
+):
+    """Cotizaciones POS: creación y listado (no descuenta inventario)."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Quote.objects.prefetch_related('lines__inventory_item').all().order_by('-created_at')
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return QuoteListSerializer
+        if self.action == 'create':
+            return QuoteCreateSerializer
+        return QuoteReadSerializer
+
+    def create(self, request, *args, **kwargs):
+        ser = QuoteCreateSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        quote: Quote = ser.save()
+        return Response(QuoteReadSerializer(quote).data, status=status.HTTP_201_CREATED)

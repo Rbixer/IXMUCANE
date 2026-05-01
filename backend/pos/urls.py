@@ -1,10 +1,12 @@
 from django.urls import include, path
 from rest_framework.routers import DefaultRouter
 
-from .views import SaleViewSet, pos_ping, pos_sales_dashboard_summary, sale_factura_pdf
+from .views import CustomerViewSet, QuoteViewSet, SaleViewSet, pos_ping, pos_sales_dashboard_summary, sale_factura_pdf
 
 router = DefaultRouter()
 router.register(r'sales', SaleViewSet, basename='pos-sale')
+router.register(r'quotes', QuoteViewSet, basename='pos-quote')
+router.register(r'customers', CustomerViewSet, basename='pos-customer')
 
 urlpatterns = [
     path('ping/', pos_ping, name='pos_ping'),

@@ -26,6 +26,18 @@ class InventoryItem(models.Model):
         decimal_places=2,
         help_text='Precio de venta por unidad (pieza).',
     )
+    package_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text='Precio de venta por paquete (captura directa, sin conversiones).',
+    )
+    fardo_price = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=0,
+        help_text='Precio de venta por fardo (captura directa, sin conversiones).',
+    )
     cost_price = models.DecimalField(
         max_digits=10,
         decimal_places=2,

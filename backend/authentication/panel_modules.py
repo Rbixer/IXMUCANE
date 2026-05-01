@@ -5,6 +5,9 @@ PANEL_MODULE_IDS: frozenset[str] = frozenset(
         'dashboard',
         'proveedores',
         'inventario',
+        'inventario_bodega_1',
+        'inventario_bodega_2',
+        'inventario_bodega_3',
         'estadisticas',
         'reportes',
         'pos',
@@ -28,6 +31,13 @@ def normalize_panel_modules(raw: list | None) -> list[str]:
         if not isinstance(x, str):
             continue
         k = x.strip()
+        # Compatibilidad: permiso legado que agrupaba las 3 bodegas.
+        if k == 'inventario_bodegas':
+            for legacy in ('inventario_bodega_1', 'inventario_bodega_2', 'inventario_bodega_3'):
+                if legacy not in seen:
+                    seen.add(legacy)
+                    out.append(legacy)
+            continue
         if k not in PANEL_MODULE_IDS or k in seen:
             continue
         seen.add(k)

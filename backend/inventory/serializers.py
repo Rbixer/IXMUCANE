@@ -49,6 +49,8 @@ class InventoryItemSerializer(serializers.ModelSerializer):
             'packages_per_fardo',
             'hierarchy',
             'unit_price',
+            'package_price',
+            'fardo_price',
             'cost_price',
             'branch',
             'line',

@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Card } from '../../shared/ui/Card'
 import { useConfirm } from '../../shared/ui/ConfirmProvider'
-import { notifyError } from '../../shared/lib/notify'
+import { notifyError, notifySuccess } from '../../shared/lib/notify'
 import { DataTable } from '../../shared/ui/DataTable'
 import {
   createWorkSchedule,
@@ -25,6 +25,7 @@ const emptyForm = {
 }
 
 export function HorariosPage() {
+  const { confirm } = useConfirm()
   const queryClient = useQueryClient()
   const [modalOpen, setModalOpen] = useState(false)
   const [form, setForm] = useState(emptyForm)
@@ -58,9 +59,10 @@ export function HorariosPage() {
   const deleteMutation = useMutation({
     mutationFn: deleteWorkSchedule,
     onSuccess: () => {
+      notifySuccess('Horario eliminado.')
       void queryClient.invalidateQueries({ queryKey: scheduleQueryKey })
     },
-    onError: (err: Error) => window.alert(err.message),
+    onError: (err: Error) => notifyError(err.message),
   })
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -136,8 +138,13 @@ export function HorariosPage() {
                 <button
                   type="button"
                   className="text-xs font-semibold text-red-700 hover:underline"
-                  onClick={() => {
-                    const ok = window.confirm('Eliminar este horario?')
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: 'Eliminar horario',
+                      message: '¿Eliminar este horario?',
+                      confirmLabel: 'Eliminar',
+                      tone: 'danger',
+                    })
                     if (!ok) return
                     deleteMutation.mutate(row.id)
                   }}

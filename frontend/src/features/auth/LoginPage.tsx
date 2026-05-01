@@ -80,13 +80,7 @@ export function LoginPage() {
       setSesionTrasLogin(puedeAdmin ? 'admin' : 'panel', puedeAdmin)
       setPanelModulesDesdePerfil(puedeAdmin ? null : profile.panel_allowed_modules)
 
-      const bid =
-        profile.personnel_branch_id != null &&
-        Number.isFinite(profile.personnel_branch_id) &&
-        profile.personnel_branch_id > 0
-          ? profile.personnel_branch_id
-          : null
-      setPanelBranchIdInStorage(bid)
+      setPanelBranchIdInStorage(null)
 
       if (typeof sessionStorage !== 'undefined') {
         sessionStorage.removeItem('boutique_resumen_admin')

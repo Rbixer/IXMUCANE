@@ -4,6 +4,8 @@ import { api } from '../../shared/api/client'
 export type InventoryReportItem = {
   id: number
   nombre: string
+  branch_id: number
+  branch_name: string
   categoria: string
   units_per_package: number
   units_per_fardo: number
@@ -15,6 +17,14 @@ export type InventoryReportItem = {
 export type InventoryReportJson = {
   generated_at: string
   items: InventoryReportItem[]
+}
+
+export async function transferInventoryByBranch(fromBranchId: number, toBranchId: number) {
+  const { data } = await api.post('/inventory/transfer-by-branch/', {
+    from_branch_id: fromBranchId,
+    to_branch_id: toBranchId,
+  })
+  return data as { moved: number; from_branch_id: number; to_branch_id: number }
 }
 
 export type PosReportLine = {
@@ -47,14 +57,16 @@ export type PosReportJson = {
 
 type ReportSlug = 'inventario' | 'sistema-pos'
 type ReportKind = 'json' | 'pdf' | 'xlsx'
+type InventoryScope = 'tienda' | 'b1' | 'b2' | 'b3'
 
 /**
  * Exportación por ruta explícita (`/reports/inventario/pdf/`, etc.).
  * Evita ambigüedades de query y negociación de contenido del cliente HTTP.
  */
-function reportExportPath(slug: ReportSlug, kind: ReportKind, branchId?: number): string {
+function reportExportPath(slug: ReportSlug, kind: ReportKind, branchId?: number, scope?: InventoryScope): string {
   const s = new URLSearchParams()
   if (branchId != null && branchId > 0) s.set('branch', String(branchId))
+  if (scope) s.set('scope', scope)
   s.set('_t', String(Date.now()))
   const q = s.toString()
   return `/reports/${slug}/${kind}/${q ? `?${q}` : ''}`
@@ -118,6 +130,7 @@ export async function downloadReportFile(
   format: 'pdf' | 'xlsx',
   filename: string,
   branchId?: number,
+  scope?: InventoryScope,
 ) {
   const mime =
     format === 'pdf'
@@ -125,7 +138,7 @@ export async function downloadReportFile(
       : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 
   const slug: ReportSlug = path.includes('sistema-pos') ? 'sistema-pos' : 'inventario'
-  const url = reportExportPath(slug, format, branchId)
+  const url = reportExportPath(slug, format, branchId, scope)
 
   let response: Awaited<ReturnType<typeof api.get<ArrayBuffer>>>
   try {

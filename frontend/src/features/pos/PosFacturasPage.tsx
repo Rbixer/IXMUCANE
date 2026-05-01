@@ -1,14 +1,18 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { FileText } from 'lucide-react'
-import { listPosSales } from './pos.service'
+import { Eye, FileText } from 'lucide-react'
+import { fetchPosSale, listPosSales, posSaleFromListItem } from './pos.service'
+import { SaleReceiptModal } from './SaleReceiptModal'
 import { api } from '../../shared/api/client'
 import { saleFacturaPdfUrl } from '../reportes/reportes.service'
+import { notifyError } from '../../shared/lib/notify'
 import { DataTable } from '../../shared/ui/DataTable'
-import type { PosSaleListItem } from './pos.service'
+import type { PosSale, PosSaleListItem } from './pos.service'
 
 export function PosFacturasPage() {
   const [downloadingId, setDownloadingId] = useState<number | null>(null)
+  const [previewSale, setPreviewSale] = useState<PosSale | null>(null)
+  const [previewLoadingId, setPreviewLoadingId] = useState<number | null>(null)
 
   const salesQuery = useQuery({
     queryKey: ['pos', 'sales', 'facturas', 'all'],
@@ -35,15 +39,39 @@ export function PosFacturasPage() {
     }
   }
 
+  const openReceiptPreview = async (row: PosSaleListItem) => {
+    const fromList = posSaleFromListItem(row)
+    if (fromList) {
+      setPreviewSale(fromList)
+      return
+    }
+    setPreviewLoadingId(row.id)
+    try {
+      const sale = await fetchPosSale(row.id)
+      setPreviewSale(sale)
+    } catch (e) {
+      notifyError(e instanceof Error ? e.message : 'No se pudo cargar el detalle de la venta.')
+    } finally {
+      setPreviewLoadingId(null)
+    }
+  }
+
   const rows = salesQuery.data ?? []
 
   return (
     <div className="space-y-6">
+      <SaleReceiptModal
+        sale={previewSale}
+        onClose={() => setPreviewSale(null)}
+        variant="preview"
+        showPrintButton
+      />
       <header className="border-b border-material-outline pb-6">
         <h1 className="text-2xl font-medium tracking-tight text-material-emphasis">POS · Facturas</h1>
         <p className="mt-1 max-w-2xl text-sm text-material-muted">
-          Cada venta POS queda como ticket (número de factura) con detalle descargable en PDF. Las existencias reflejan
-          el inventario y coinciden con Inventario · Productos y Reportes · Inventario general.
+          Use la columna Vista previa para ver el recibo en
+          pantalla antes de imprimir o descargar el PDF. Cada venta POS queda como ticket; las existencias reflejan el
+          inventario y coinciden con la sección Inventario · Productos y reportes.
         </p>
       </header>
 
@@ -66,8 +94,36 @@ export function PosFacturasPage() {
                 r.payment_method === 'cash' ? 'Efectivo' : r.payment_method === 'card' ? 'Tarjeta' : 'Otro',
             },
             { key: 'total', label: 'Total' },
+            {
+              key: 'customer_name',
+              label: 'Cliente',
+              render: (r) =>
+                r.customer_name ? (
+                  <div className="text-xs">
+                    <p className="font-medium text-material-emphasis">{r.customer_name}</p>
+                    <p className="text-material-muted">{r.customer_phone || r.customer_email || 'Sin contacto'}</p>
+                  </div>
+                ) : (
+                  '—'
+                ),
+            },
             { key: 'lines_count', label: 'Productos' },
             { key: 'total_units', label: 'Unidades' },
+            {
+              key: 'preview',
+              label: 'Vista previa',
+              render: (r) => (
+                <button
+                  type="button"
+                  disabled={previewLoadingId === r.id}
+                  onClick={() => void openReceiptPreview(r)}
+                  className="inline-flex items-center gap-1 rounded-md border border-material-outline bg-white px-2 py-1 text-xs font-semibold text-material-emphasis hover:bg-material-surface-variant disabled:opacity-50"
+                >
+                  <Eye size={14} aria-hidden />
+                  {previewLoadingId === r.id ? '…' : 'Recibo'}
+                </button>
+              ),
+            },
             {
               key: 'pdf',
               label: 'Factura PDF',

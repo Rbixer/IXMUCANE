@@ -1,6 +1,65 @@
 from django.db import models
 
 
+class Customer(models.Model):
+    """Cliente POS para autocompletado en ventas/pedidos."""
+
+    name = models.CharField(max_length=200)
+    phone = models.CharField(max_length=40, blank=True, default='')
+    email = models.EmailField(blank=True, default='')
+    address = models.TextField(blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['name', 'id']
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class Quote(models.Model):
+    """Cotización POS (sin descuento de inventario). Número = pk autoincrementable."""
+
+    customer_name = models.CharField(max_length=200, blank=True, default='')
+    customer_nit = models.CharField(max_length=80, blank=True, default='')
+    notes = models.TextField(blank=True, default='')
+    total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+
+    def __str__(self) -> str:
+        return f'Cotización #{self.pk} {self.total}'
+
+
+class QuoteLine(models.Model):
+    class UnitKind(models.TextChoices):
+        UNIT = 'unit', 'Unidad'
+        PACKAGE = 'package', 'Paquete'
+        FARDO = 'fardo', 'Fardo'
+
+    quote = models.ForeignKey(Quote, on_delete=models.CASCADE, related_name='lines')
+    inventory_item = models.ForeignKey(
+        'inventory.InventoryItem',
+        on_delete=models.PROTECT,
+        related_name='quote_lines',
+    )
+    quantity = models.PositiveIntegerField()
+    unit_kind = models.CharField(
+        max_length=16,
+        choices=UnitKind.choices,
+        default=UnitKind.UNIT,
+    )
+    line_unit_price = models.DecimalField(max_digits=10, decimal_places=2)
+
+    class Meta:
+        ordering = ['id']
+
+    def __str__(self) -> str:
+        return f'{self.inventory_item.sku} x{self.quantity}'
+
+
 class Sale(models.Model):
     """Venta POS (cabecera). El detalle va en SaleLine."""
 
@@ -14,6 +73,17 @@ class Sale(models.Model):
         on_delete=models.PROTECT,
         related_name='pos_sales',
     )
+    customer = models.ForeignKey(
+        'pos.Customer',
+        on_delete=models.PROTECT,
+        related_name='sales',
+        null=True,
+        blank=True,
+    )
+    customer_name = models.CharField(max_length=200, blank=True, default='')
+    customer_phone = models.CharField(max_length=40, blank=True, default='')
+    customer_email = models.EmailField(blank=True, default='')
+    customer_address = models.TextField(blank=True, default='')
     payment_method = models.CharField(
         max_length=16,
         choices=Payment.choices,

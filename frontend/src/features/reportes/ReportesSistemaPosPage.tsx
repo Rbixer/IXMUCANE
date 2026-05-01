@@ -74,7 +74,6 @@ export function ReportesSistemaPosPage() {
           columns={[
             { key: 'id', label: 'Ticket' },
             { key: 'fecha', label: 'Fecha', render: (r) => r.fecha.slice(0, 19).replace('T', ' ') },
-            { key: 'ubicacion', label: 'Referencia' },
             { key: 'metodo_pago', label: 'Pago' },
             { key: 'total', label: 'Total' },
             {

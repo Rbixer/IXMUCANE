@@ -2,8 +2,6 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchPosDashboardSummary } from '../pos/pos.service'
 import type { PosDashboardDaily } from '../pos/pos.service'
-import { DualLineDailySalesChart, LineTimeseriesChart } from './LineTimeseriesChart'
-import type { DualDailyPoint, LinePoint } from './LineTimeseriesChart'
 
 function formatMoney(s: string) {
   const n = Number(s)
@@ -16,21 +14,6 @@ function formatMoneyNumber(n: number) {
   return new Intl.NumberFormat('es-GT', { style: 'currency', currency: 'GTQ', maximumFractionDigits: 0 }).format(n)
 }
 
-function mapDailyToCharts(rows: PosDashboardDaily[]): { lineAmount: LinePoint[]; dual: DualDailyPoint[] } {
-  const lineAmount: LinePoint[] = []
-  const dual: DualDailyPoint[] = []
-  rows.forEach((row, idx) => {
-    const key = row.date ?? `d-${idx}`
-    const label = row.date ? row.date.slice(5) : '—'
-    const amt = Number(row.amount)
-    const amount = Number.isFinite(amt) ? amt : 0
-    const count = Number.isFinite(row.count) ? row.count : 0
-    lineAmount.push({ key, label, value: amount })
-    dual.push({ key, label, amount, count })
-  })
-  return { lineAmount, dual }
-}
-
 const PERIOD_OPTIONS = [7, 14, 30] as const
 
 export function GraficosVentasPage() {
@@ -41,8 +24,23 @@ export function GraficosVentasPage() {
     staleTime: 30_000,
   })
   const daily = q.data?.daily ?? []
-
-  const { lineAmount, dual } = useMemo(() => mapDailyToCharts(daily), [daily])
+  const dailyRows = useMemo(
+    () =>
+      daily.map((row, idx) => {
+        const key = row.date ?? `d-${idx}`
+        const label = row.date ? row.date.slice(5) : '—'
+        const amountRaw = Number(row.amount)
+        const amount = Number.isFinite(amountRaw) ? amountRaw : 0
+        const count = Number.isFinite(row.count) ? row.count : 0
+        const avgTicket = count > 0 ? amount / count : 0
+        return { key, label, amount, count, avgTicket }
+      }),
+    [daily],
+  )
+  const topAmount = useMemo(
+    () => Math.max(...dailyRows.map((r) => r.amount).filter(Number.isFinite), 1),
+    [dailyRows],
+  )
 
   return (
     <div className="space-y-8">
@@ -77,31 +75,68 @@ export function GraficosVentasPage() {
       ) : null}
 
       <section className="rounded-xl border border-material-outline bg-material-surface p-6 shadow-material">
-        <h2 className="text-base font-semibold text-material-emphasis">Facturación y tickets por día</h2>
+        <h2 className="text-base font-semibold text-material-emphasis">Facturación diaria (barras)</h2>
         <p className="mt-0.5 text-sm text-material-muted">
-          Línea azul: importe del día (Q). Línea verde: cantidad de ventas registradas.
+          Visual ejecutivo de ingresos por día. Barras escaladas al mayor importe del periodo.
         </p>
         {q.isLoading ? (
           <p className="mt-4 text-sm text-material-muted">Cargando…</p>
-        ) : dual.length === 0 ? (
+        ) : dailyRows.length === 0 ? (
           <p className="mt-4 text-sm text-material-muted">No hay ventas en el periodo seleccionado.</p>
         ) : (
-          <div className="mt-4">
-            <DualLineDailySalesChart points={dual} formatMoneyY={formatMoneyNumber} />
+          <div className="mt-4 overflow-x-auto rounded-lg border border-material-outline bg-material-surface-variant/40 p-3">
+            <div className="flex min-w-[680px] items-end gap-2">
+              {dailyRows.map((row) => {
+                const pct = Math.max(6, Math.round((row.amount / topAmount) * 100))
+                return (
+                  <div key={row.key} className="flex w-10 shrink-0 flex-col items-center">
+                    <span className="mb-1 text-[10px] font-semibold text-material-muted">
+                      {row.amount > 0 ? formatMoneyNumber(row.amount).replace('GTQ', 'Q') : '—'}
+                    </span>
+                    <div className="flex h-48 w-full items-end rounded-t-md bg-material-surface-variant/70 px-1">
+                      <div
+                        className="w-full rounded-t-md bg-gradient-to-t from-boutique-600 to-red-500 shadow-sm"
+                        style={{ height: `${pct}%` }}
+                        title={`${row.label}: ${formatMoneyNumber(row.amount)} (${row.count} tickets)`}
+                      />
+                    </div>
+                    <span className="mt-1 text-[10px] text-material-muted">{row.label}</span>
+                  </div>
+                )
+              })}
+            </div>
           </div>
         )}
       </section>
 
       <section className="rounded-xl border border-material-outline bg-material-surface p-6 shadow-material">
-        <h2 className="text-base font-semibold text-material-emphasis">Tendencia de importes</h2>
-        <p className="mt-0.5 text-sm text-material-muted">Misma serie diaria, vista solo de facturación.</p>
+        <h2 className="text-base font-semibold text-material-emphasis">Productividad diaria (sin líneas)</h2>
+        <p className="mt-0.5 text-sm text-material-muted">Tickets y ticket promedio por día para lectura gerencial.</p>
         {q.isLoading ? (
           <p className="mt-4 text-sm text-material-muted">Cargando…</p>
-        ) : lineAmount.length === 0 ? (
+        ) : dailyRows.length === 0 ? (
           <p className="mt-4 text-sm text-material-muted">No hay datos.</p>
         ) : (
-          <div className="mt-4">
-            <LineTimeseriesChart points={lineAmount} formatY={formatMoneyNumber} stroke="#7c3aed" />
+          <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+            {dailyRows.map((row) => (
+              <article
+                key={`kpi-${row.key}`}
+                className="rounded-lg border border-material-outline bg-material-surface p-3 shadow-sm"
+              >
+                <p className="text-xs font-semibold uppercase tracking-wide text-material-muted">{row.label}</p>
+                <p className="mt-1 text-base font-semibold text-material-emphasis">
+                  {formatMoneyNumber(row.amount)}
+                </p>
+                <div className="mt-2 flex items-center justify-between text-xs">
+                  <span className="rounded-full bg-boutique-50 px-2 py-0.5 font-medium text-boutique-700">
+                    {row.count} tickets
+                  </span>
+                  <span className="text-material-muted">
+                    Promedio: {row.count > 0 ? formatMoneyNumber(row.avgTicket) : '—'}
+                  </span>
+                </div>
+              </article>
+            ))}
           </div>
         )}
       </section>

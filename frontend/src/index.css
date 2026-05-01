@@ -2,6 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
+html {
+  /* ~6% más grande que 16px para lectura más cómoda (text-base de Tailwind escala en rem). */
+  font-size: 106.25%;
+}
+
 html,
 body,
 #root {
@@ -10,10 +15,44 @@ body,
 
 body {
   margin: 0;
-  font-family: Roboto, Inter, system-ui, 'Segoe UI', sans-serif;
+  font-family: Inter, Roboto, system-ui, 'Segoe UI', sans-serif;
+  font-weight: 400;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
   /* Fondo “canvas” alineado con plantillas tipo Materially (gris muy claro). */
   background: #f4f6f8;
-  color: #0f172a;
+  color: #000000;
+}
+
+/* Tipografia global en negro para toda la app. */
+#root {
+  color: #000000;
+}
+
+/* Mantiene el texto consistente en componentes HTML base. */
+a,
+p,
+span,
+label,
+small,
+strong,
+em,
+li,
+th,
+td,
+input,
+textarea,
+select,
+button,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  color: inherit;
 }
 
 /* Acento superior ligero (estilo dashboards tipo Materially / MUI) */
@@ -23,4 +62,23 @@ body::before {
   width: 100%;
   height: 3px;
   background: #c40000;
+}
+
+/* Impresión del recibo POS: solo el ticket (clase temporal en body desde SaleReceiptModal). */
+@media print {
+  body.printing-pos-receipt * {
+    visibility: hidden;
+  }
+  body.printing-pos-receipt .pos-receipt-print-root,
+  body.printing-pos-receipt .pos-receipt-print-root * {
+    visibility: visible !important;
+  }
+  body.printing-pos-receipt .pos-receipt-print-root {
+    position: absolute !important;
+    left: 0;
+    top: 0;
+    width: 100%;
+    max-width: none !important;
+    box-shadow: none !important;
+  }
 }

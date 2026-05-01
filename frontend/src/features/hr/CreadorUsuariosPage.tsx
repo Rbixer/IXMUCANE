@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Pencil, Shield, Trash2 } from 'lucide-react'
 import { Card } from '../../shared/ui/Card'
 import { useConfirm } from '../../shared/ui/ConfirmProvider'
-import { notifyError } from '../../shared/lib/notify'
+import { notifyError, notifySuccess } from '../../shared/lib/notify'
 import { formatApiError } from '../../shared/lib/apiError'
 import { DataTable } from '../../shared/ui/DataTable'
 import { puedeGestionarCreadorYVerificacion } from '../../shared/lib/accesoSesion'
@@ -78,6 +78,7 @@ export function CreadorUsuariosPage() {
   const deleteMutation = useMutation({
     mutationFn: deletePanelWorkerUser,
     onSuccess: () => {
+      notifySuccess('Cuenta eliminada correctamente.')
       void queryClient.invalidateQueries({ queryKey: queryKey })
     },
     onError: (e: Error) => notifyError(e.message),

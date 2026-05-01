@@ -9,6 +9,7 @@ from io import BytesIO
 from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 from openpyxl import Workbook
+from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Font
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
@@ -24,6 +25,7 @@ from rest_framework.permissions import IsAuthenticated
 from inventory.models import InventoryItem
 from inventory.unit_hierarchy import hierarchy_label, split_stock_hierarchy
 from pos.models import Sale
+from branches.models import Branch
 
 _REPORT_KINDS = frozenset({'json', 'pdf', 'xlsx'})
 
@@ -31,6 +33,25 @@ _REPORT_KINDS = frozenset({'json', 'pdf', 'xlsx'})
 def _set_no_store(resp):
     resp['Cache-Control'] = 'no-store, private'
     return resp
+
+
+def _add_logo_to_ws(ws, cell: str = 'A1', width_px: int = 180) -> None:
+    """Inserta logo de marca en una hoja de Excel, si existe."""
+    logo_buf = pdf_header_image_bytes()
+    try:
+        with PILImage.open(logo_buf) as pil_im:
+            src_w, src_h = pil_im.size
+            if src_w <= 0 or src_h <= 0:
+                return
+            new_h = max(24, int((src_h * width_px) / src_w))
+            resized = pil_im.convert('RGB').resize((width_px, new_h))
+            out = BytesIO()
+            resized.save(out, format='PNG')
+            out.seek(0)
+    except Exception:
+        return
+    img = XLImage(out)
+    ws.add_image(img, cell)
 
 
 def _report_export_format(request) -> str:
@@ -65,10 +86,36 @@ def _parse_branch(request) -> int | None:
     return n if n > 0 else None
 
 
-def _inventory_rows(branch_id: int | None) -> list[dict]:
+def _parse_inventory_scope(request) -> str | None:
+    raw = (request.query_params.get('scope') or request.query_params.get('ubicacion') or '').strip().lower()
+    return raw if raw in {'tienda', 'b1', 'b2', 'b3'} else None
+
+
+def _bodega_branch_ids() -> dict[str, int | None]:
+    by_name = {b.name.strip().lower(): int(b.id) for b in Branch.objects.filter(is_active=True)}
+    return {
+        'b1': by_name.get('bodega 1'),
+        'b2': by_name.get('bodega 2'),
+        'b3': by_name.get('bodega 3'),
+    }
+
+
+def _inventory_rows(branch_id: int | None, scope: str | None = None) -> list[dict]:
     qs = InventoryItem.objects.select_related('branch', 'category').order_by('branch__name', 'line', 'sku')
     if branch_id is not None:
         qs = qs.filter(branch_id=branch_id)
+    elif scope is not None:
+        bodega_ids_map = _bodega_branch_ids()
+        bodega_ids = [bid for bid in bodega_ids_map.values() if isinstance(bid, int) and bid > 0]
+        if scope == 'tienda':
+            if bodega_ids:
+                qs = qs.exclude(branch_id__in=bodega_ids)
+        else:
+            bid = bodega_ids_map.get(scope)
+            if isinstance(bid, int) and bid > 0:
+                qs = qs.filter(branch_id=bid)
+            else:
+                qs = qs.none()
     rows = []
     for obj in qs:
         upp = int(obj.units_per_package)
@@ -78,6 +125,8 @@ def _inventory_rows(branch_id: int | None) -> list[dict]:
             {
                 'id': obj.pk,
                 'nombre': obj.name,
+                'branch_id': obj.branch_id,
+                'branch_name': obj.branch.name if obj.branch_id else '',
                 'categoria': obj.category.name if obj.category_id else '',
                 'units_per_package': obj.units_per_package,
                 'units_per_fardo': units_per_fardo,
@@ -211,13 +260,14 @@ def inventory_report(request, salida: str | None = None):
             )
         )
     branch_id = _parse_branch(request)
+    scope = _parse_inventory_scope(request)
 
     if fmt == 'json':
         return _set_no_store(
-            JsonResponse({'generated_at': timezone.now().isoformat(), 'items': _inventory_rows(branch_id)})
+            JsonResponse({'generated_at': timezone.now().isoformat(), 'items': _inventory_rows(branch_id, scope)})
         )
 
-    rows = _inventory_rows(branch_id)
+    rows = _inventory_rows(branch_id, scope)
     headers = [
         'Nombre',
         'Categoría',
@@ -232,11 +282,13 @@ def inventory_report(request, salida: str | None = None):
         wb = Workbook()
         ws = wb.active
         ws.title = 'Inventario'
+        _add_logo_to_ws(ws, 'A1')
+        header_row = 8
         bold = Font(bold=True)
         for col, h in enumerate(headers, start=1):
-            c = ws.cell(row=1, column=col, value=h)
+            c = ws.cell(row=header_row, column=col, value=h)
             c.font = bold
-        for r, item in enumerate(rows, start=2):
+        for r, item in enumerate(rows, start=header_row + 1):
             ws.cell(row=r, column=1, value=item['nombre'])
             ws.cell(row=r, column=2, value=item['categoria'])
             ws.cell(row=r, column=3, value=item['units_per_package'])
@@ -310,11 +362,13 @@ def pos_sales_report(request, salida: str | None = None):
         wb = Workbook()
         ws = wb.active
         ws.title = 'Ventas'
+        _add_logo_to_ws(ws, 'A1')
         h = ['Ticket', 'Fecha', 'Ubicación', 'Pago', 'Total']
+        header_row = 8
         bold = Font(bold=True)
         for col, title in enumerate(h, start=1):
-            ws.cell(row=1, column=col, value=title).font = bold
-        r = 2
+            ws.cell(row=header_row, column=col, value=title).font = bold
+        r = header_row + 1
         for v in rows:
             ws.cell(row=r, column=1, value=v['id'])
             ws.cell(row=r, column=2, value=v['fecha'][:19])
@@ -323,10 +377,12 @@ def pos_sales_report(request, salida: str | None = None):
             ws.cell(row=r, column=5, value=v['total'])
             r += 1
         ws2 = wb.create_sheet('Detalle líneas')
+        _add_logo_to_ws(ws2, 'A1')
         h2 = ['Ticket', 'SKU', 'Producto', 'Cantidad (u)', 'Desglose', 'P.U.', 'Subtotal']
+        header_row_2 = 8
         for col, title in enumerate(h2, start=1):
-            ws2.cell(row=1, column=col, value=title).font = bold
-        r2 = 2
+            ws2.cell(row=header_row_2, column=col, value=title).font = bold
+        r2 = header_row_2 + 1
         for v in rows:
             for ln in v['lineas']:
                 ws2.cell(row=r2, column=1, value=v['id'])
@@ -351,11 +407,11 @@ def pos_sales_report(request, salida: str | None = None):
     if fmt == 'pdf':
         data_rows = []
         for v in rows[:200]:
-            data_rows.append([str(v['id']), v['fecha'][:19], v['ubicacion'][:24], v['metodo_pago'], v['total']])
+            data_rows.append([str(v['id']), v['fecha'][:19], v['metodo_pago'], v['total']])
         return _branded_table_pdf(
             'Ventas POS — Aluminios Ixmucane',
             'Reporte de ventas POS (tickets)',
-            ['Ticket', 'Fecha', 'Ubicación', 'Pago', 'Total'],
+            ['Ticket', 'Fecha', 'Pago', 'Total'],
             data_rows,
             f'reporte_pos_{datetime.now():%Y%m%d_%H%M}.pdf',
         )

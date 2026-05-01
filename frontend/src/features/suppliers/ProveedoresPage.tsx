@@ -2,6 +2,7 @@ import { type FormEvent, useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Trash2 } from 'lucide-react'
 import { listBranches } from '../branches/branches.service'
+import { pickPrimaryInventoryBranchId } from '../../shared/lib/defaultBranch'
 import { listInventory } from '../inventory/inventory.service'
 import {
   createPurchaseOrder,
@@ -15,6 +16,7 @@ import { esPanelSoloLecturaEnModulo } from '../../shared/lib/accesoSesion'
 import { formatApiError } from '../../shared/lib/apiError'
 import { totalUnitsFromHierarchy } from '../../shared/lib/unitHierarchy'
 import { Card } from '../../shared/ui/Card'
+import { notifyError, notifySuccess } from '../../shared/lib/notify'
 import { useConfirm } from '../../shared/ui/ConfirmProvider'
 import { LineProductAutocomplete, ProductSearchAddPanel } from '../inventory/InventoryProductSearch'
 import type { Supplier } from './suppliers.service'
@@ -50,10 +52,9 @@ export function ProveedoresPage() {
   const branchesQuery = useQuery({ queryKey: ['branches'], queryFn: listBranches })
 
   useEffect(() => {
-    const first = branchesQuery.data?.find((b) => b.id > 0)?.id
-    if (first != null && first > 0 && branchId === 0) {
-      setBranchId(first)
-    }
+    if (branchId !== 0) return
+    const id = pickPrimaryInventoryBranchId(branchesQuery.data ?? [])
+    if (id != null && id > 0) setBranchId(id)
   }, [branchesQuery.data, branchId])
 
   const invQuery = useQuery({
@@ -91,9 +92,14 @@ export function ProveedoresPage() {
     mutationFn: deleteSupplier,
     onSuccess: () => {
       setSupplierErr('')
+      notifySuccess('Proveedor eliminado.')
       void queryClient.invalidateQueries({ queryKey: ['suppliers', 'proveedores'] })
     },
-    onError: (e: unknown) => setSupplierErr(formatApiError(e)),
+    onError: (e: unknown) => {
+      const msg = formatApiError(e)
+      setSupplierErr(msg)
+      notifyError(msg)
+    },
   })
 
   const createOrderMut = useMutation({
@@ -114,6 +120,7 @@ export function ProveedoresPage() {
     mutationFn: deletePurchaseOrder,
     onSuccess: async () => {
       setOrderErr('')
+      notifySuccess('Orden de compra eliminada. Se revirtió el inventario.')
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['suppliers', 'ordenes'] }),
         queryClient.invalidateQueries({ queryKey: ['inventory'] }),
@@ -121,7 +128,11 @@ export function ProveedoresPage() {
         queryClient.invalidateQueries({ queryKey: ['reports', 'inventario'] }),
       ])
     },
-    onError: (e: unknown) => setOrderErr(formatApiError(e)),
+    onError: (e: unknown) => {
+      const msg = formatApiError(e)
+      setOrderErr(msg)
+      notifyError(msg)
+    },
   })
 
   const appendLineFromItem = (inventoryItemId: number) => {
@@ -472,7 +483,6 @@ export function ProveedoresPage() {
                 <tr className="border-b border-slate-200 text-xs uppercase text-slate-500">
                   <th className="py-2 pr-2">ID</th>
                   <th className="py-2 pr-2">Proveedor</th>
-                  <th className="py-2 pr-2">Local</th>
                   <th className="py-2 pr-2">Líneas</th>
                   <th className="py-2 pr-2">Ref.</th>
                   <th className="py-2 pr-2">Fecha</th>
@@ -484,7 +494,6 @@ export function ProveedoresPage() {
                   <tr key={o.id} className="border-b border-slate-100">
                     <td className="py-2 pr-2 font-mono text-xs">{o.id}</td>
                     <td className="py-2 pr-2">{o.supplier_name}</td>
-                    <td className="py-2 pr-2">{o.branch_name}</td>
                     <td className="py-2 pr-2">{o.lines_count}</td>
                     <td className="py-2 pr-2 text-xs">{o.reference || '—'}</td>
                     <td className="py-2 pr-2 text-xs text-slate-600">

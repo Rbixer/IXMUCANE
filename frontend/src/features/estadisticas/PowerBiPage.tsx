@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { BarChart3, LayoutDashboard, LineChart, Store } from 'lucide-react'
+import { BarChart3, LayoutDashboard, Store } from 'lucide-react'
 import { fetchPosDashboardSummary } from '../pos/pos.service'
 import { getInventoryBranchSummary } from '../inventory/inventory.service'
 import { listBranches } from '../branches/branches.service'
@@ -17,6 +17,15 @@ function formatMoney(s: string) {
 function pctOf(part: number, whole: number): number {
   if (!Number.isFinite(part) || !Number.isFinite(whole) || whole <= 0) return 0
   return Math.min(100, Math.round((part / whole) * 100))
+}
+
+function cleanBranchLabel(name: string): string {
+  const cleaned = name
+    .replace(/\bsucursal\b/gi, '')
+    .replace(/\bcentro\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+  return cleaned || 'Punto'
 }
 
 /** Anillo KPI estilo panel (porcentaje centrado). */
@@ -230,7 +239,7 @@ export function PowerBiPage() {
     for (const b of branchesQuery.data ?? []) {
       if (b.id > 0) m.set(b.id, b.name)
     }
-    return (id: number) => m.get(id) ?? `Tienda #${id}`
+    return (id: number) => m.get(id) ?? `Punto #${id}`
   }, [branchesQuery.data])
 
   const pos = posQuery.data
@@ -267,70 +276,52 @@ export function PowerBiPage() {
     return { dama, cab, mov, skus }
   }, [invQuery.data])
 
-  const invSegments = useMemo(() => {
-    const { dama, cab } = invMix
-    const t = dama + cab
-    if (t <= 0) {
-      return [{ pct: 100, color: '#cbd5e1', label: 'Sin datos de línea' }]
-    }
-    return [
-      { pct: dama, color: '#c40000', label: 'Catálogo línea dama' },
-      { pct: cab, color: '#0f766e', label: 'Catálogo línea caballero' },
-    ]
-  }, [invMix])
-
   const movVsSkuPct = useMemo(() => {
     const { mov, skus } = invMix
     if (skus <= 0) return 0
     return Math.min(999, Math.round((mov / skus) * 100))
   }, [invMix])
 
-  const linePointsAmount = useMemo(
-    () =>
-      (pos?.daily ?? []).map((row, idx) => ({
-        key: row.date ?? `amt-${idx}`,
-        label: row.date ? row.date.slice(5) : `—${idx}`,
-        value: Number(row.amount) || 0,
-      })),
-    [pos?.daily],
-  )
-
-  const linePointsCount = useMemo(
-    () =>
-      (pos?.daily ?? []).map((row, idx) => ({
-        key: row.date ?? `cnt-${idx}`,
-        label: row.date ? row.date.slice(5) : `—${idx}`,
-        value: row.count,
-      })),
-    [pos?.daily],
-  )
-
-  const linePointsCumulative = useMemo(() => {
-    let acc = 0
-    return (pos?.daily ?? []).map((row, idx) => {
-      acc += Number(row.amount) || 0
+  const dailyExecutive = useMemo(() => {
+    const rows = (pos?.daily ?? []).map((row, idx) => {
+      const amount = Number(row.amount) || 0
+      const count = Number.isFinite(row.count) ? row.count : 0
       return {
-        key: `cum-${row.date ?? idx}`,
+        key: row.date ?? `d-${idx}`,
         label: row.date ? row.date.slice(5) : `—${idx}`,
-        value: acc,
+        date: row.date,
+        amount,
+        count,
+        avgTicket: count > 0 ? amount / count : 0,
       }
     })
+    const cumulative = rows.reduce((a, r) => a + r.amount, 0)
+    const bestAmount = rows.reduce((best, r) => (r.amount > best.amount ? r : best), {
+      key: 'none',
+      label: '—',
+      date: null as string | null,
+      amount: 0,
+      count: 0,
+      avgTicket: 0,
+    })
+    const bestCount = rows.reduce((best, r) => (r.count > best.count ? r : best), {
+      key: 'none',
+      label: '—',
+      date: null as string | null,
+      amount: 0,
+      count: 0,
+      avgTicket: 0,
+    })
+    return { rows, cumulative, bestAmount, bestCount }
   }, [pos?.daily])
-
-  const linePointsBranchSales = useMemo(
+  const areaDailyPoints = useMemo(
     () =>
-      [...branchBars]
-        .sort((a, b) => b.amt - a.amt)
-        .slice(0, 14)
-        .map((row) => ({
-          key: String(row.branch_id),
-          label:
-            (row.branch_name || `T${row.branch_id}`).length > 9
-              ? `${(row.branch_name || `T${row.branch_id}`).slice(0, 7)}…`
-              : row.branch_name || `T${row.branch_id}`,
-          value: row.amt,
-        })),
-    [branchBars],
+      dailyExecutive.rows.map((row) => ({
+        key: `area-${row.key}`,
+        label: row.label,
+        value: row.amount,
+      })),
+    [dailyExecutive.rows],
   )
 
   return (
@@ -410,7 +401,7 @@ export function PowerBiPage() {
         </div>
         <p className="mb-6 text-sm text-slate-600">
           Columnas proporcionales al mayor valor de cada gráfico. Eje izquierdo en quetzales; desplace horizontalmente
-          si hay muchos días o tiendas.
+          si hay muchos días o puntos.
         </p>
         {posQuery.isLoading ? (
           <p className="text-sm text-slate-500">Cargando…</p>
@@ -435,10 +426,10 @@ export function PowerBiPage() {
             </div>
             <div>
               <h3 className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-500">
-                Facturación por tienda (histórico)
+                Facturación por punto (histórico)
               </h3>
               {branchBars.length === 0 ? (
-                <p className="text-sm text-slate-500">Sin datos por tienda.</p>
+                <p className="text-sm text-slate-500">Sin datos por punto.</p>
               ) : (
                 <VerticalBarChart
                   points={branchBars.slice(0, 12).map((row) => ({
@@ -457,75 +448,11 @@ export function PowerBiPage() {
         )}
       </section>
 
-      {/* Gráficos lineales */}
-      <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-        <div className="mb-1 flex items-center gap-2">
-          <LineChart className="h-5 w-5 text-teal-600" aria-hidden />
-          <h2 className="text-base font-semibold text-slate-900">Gráficos lineales (tendencia POS)</h2>
-        </div>
-        <p className="mb-6 text-sm text-slate-600">
-          Líneas con suavizado visual, área sombreada bajo la curva y rejilla de referencia. Misma serie diaria que el
-          selector de {days} días arriba.
-        </p>
-        {posQuery.isLoading ? (
-          <p className="text-sm text-slate-500">Cargando…</p>
-        ) : linePointsAmount.length === 0 ? (
-          <p className="text-sm text-slate-500">Sin ventas en el periodo para graficar líneas.</p>
-        ) : (
-          <div className="grid gap-10 lg:grid-cols-2">
-            <div>
-              <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">
-                Importe facturado por día
-              </h3>
-              <LineTimeseriesChart
-                points={linePointsAmount}
-                stroke="#1d4ed8"
-                formatY={(n) => formatMoney(String(Math.round(n)))}
-              />
-            </div>
-            <div>
-              <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">Tickets por día</h3>
-              <LineTimeseriesChart
-                points={linePointsCount}
-                stroke="#0f766e"
-                formatY={(n) => String(Math.round(n))}
-              />
-            </div>
-            <div className="lg:col-span-2">
-              <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">
-                Facturación acumulada en el periodo
-              </h3>
-              <LineTimeseriesChart
-                points={linePointsCumulative}
-                stroke="#b45309"
-                formatY={(n) => formatMoney(String(Math.round(n)))}
-              />
-            </div>
-            {linePointsBranchSales.length >= 2 ? (
-              <div className="lg:col-span-2">
-                <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">
-                  Facturación por tienda (orden de mayor a menor)
-                </h3>
-                <p className="mb-2 text-xs text-slate-500">
-                  La línea une puntos de cada local según su total histórico; no es una serie temporal, sirve para ver
-                  saltos entre tiendas.
-                </p>
-                <LineTimeseriesChart
-                  points={linePointsBranchSales}
-                  stroke="#c40000"
-                  formatY={(n) => formatMoney(String(Math.round(n)))}
-                />
-              </div>
-            ) : null}
-          </div>
-        )}
-      </section>
-
-      {/* Distribución por tienda */}
+      {/* Distribución por punto */}
       <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
         <div className="mb-1 flex items-center gap-2">
           <Store className="h-5 w-5 text-slate-600" aria-hidden />
-          <h2 className="text-base font-semibold text-slate-900">Participación por tienda (facturación)</h2>
+          <h2 className="text-base font-semibold text-slate-900">Participación por punto (facturación)</h2>
         </div>
         <p className="mb-5 text-sm text-slate-600">
           Cada barra muestra la parte del total facturado histórico atribuida a ese punto (suma = 100%).
@@ -533,13 +460,13 @@ export function PowerBiPage() {
         {posQuery.isLoading ? (
           <p className="text-sm text-slate-500">Cargando…</p>
         ) : branchBars.length === 0 ? (
-          <p className="text-sm text-slate-500">Sin ventas por tienda para graficar.</p>
+          <p className="text-sm text-slate-500">Sin ventas por punto para graficar.</p>
         ) : (
           <ul className="max-w-2xl space-y-3">
             {branchBars.slice(0, 12).map((row, i) => (
               <PctBarRow
                 key={row.branch_id}
-                label={row.branch_name || branchName(row.branch_id)}
+                label={cleanBranchLabel(row.branch_name || branchName(row.branch_id))}
                 pct={row.pct}
                 valueLabel={formatMoney(String(row.amt))}
                 barClass={i % 3 === 0 ? 'bg-boutique-500' : i % 3 === 1 ? 'bg-amber-500' : 'bg-teal-600'}
@@ -549,35 +476,67 @@ export function PowerBiPage() {
         )}
       </section>
 
-      {/* Serie diaria con % del periodo */}
+      {/* Serie diaria estilo mercado */}
       <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
-        <h2 className="text-base font-semibold text-slate-900">Serie diaria — peso de cada día en el periodo</h2>
+        <h2 className="text-base font-semibold text-slate-900">Serie diaria — gráfico de acciones</h2>
         <p className="mt-1 text-sm text-slate-600">
-          Importe del día respecto al total del periodo seleccionado ({days} días). Útil para ver picos en porcentaje.
+          Vista tipo mercado: línea de facturación diaria y barras de actividad (tickets) del periodo de {days} días.
         </p>
         {posQuery.isLoading ? (
           <p className="mt-4 text-sm text-slate-500">Cargando…</p>
         ) : (
-          <DailyPercentBars daily={pos?.daily ?? []} />
+          <StockStyleDailyChart daily={pos?.daily ?? []} />
         )}
       </section>
 
-      {/* Inventario */}
-      <section className="rounded-xl border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-6 shadow-sm">
-        <h2 className="text-base font-semibold text-slate-900">Inventario · composición del catálogo</h2>
-        <p className="mt-1 text-sm text-slate-600">
-          Proporción de referencias (SKU) entre líneas dama y caballero, y ratio movimientos de stock vs ítems.
+      {/* Vista corporativa sin líneas */}
+      <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h2 className="text-base font-semibold text-slate-900">Analítica ejecutiva del periodo</h2>
+        <p className="mb-6 text-sm text-slate-600">
+          Vista profesional sin líneas: KPIs de desempeño y ranking diario de facturación para comités de gerencia.
         </p>
-        {invQuery.isLoading ? (
-          <p className="mt-4 text-sm text-slate-500">Cargando inventario…</p>
+        {posQuery.isLoading ? (
+          <p className="text-sm text-slate-500">Cargando…</p>
+        ) : dailyExecutive.rows.length === 0 ? (
+          <p className="text-sm text-slate-500">Sin ventas en el periodo seleccionado.</p>
         ) : (
-          <div className="mt-6 space-y-8">
-            <ConicDona segments={invSegments} />
-            <div className="mx-auto max-w-md rounded-lg border border-slate-200 bg-white/90 px-4 py-3 text-center text-sm text-slate-700 shadow-inner">
-              <span className="font-semibold text-slate-900">Actividad de stock: </span>
-              {invMix.mov} movimientos frente a {invMix.skus} referencias en catálogo →{' '}
-              <span className="font-bold text-boutique-600">{movVsSkuPct}%</span>
-              <span className="text-slate-500"> (movimientos / SKU, como índice)</span>
+          <div className="space-y-6">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <article className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Facturación acumulada</p>
+                <p className="mt-1 text-lg font-bold text-slate-900">{formatMoney(String(dailyExecutive.cumulative))}</p>
+              </article>
+              <article className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Mejor día (importe)</p>
+                <p className="mt-1 text-lg font-bold text-slate-900">
+                  {dailyExecutive.bestAmount.label} · {formatMoney(String(dailyExecutive.bestAmount.amount))}
+                </p>
+              </article>
+              <article className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Pico de tickets</p>
+                <p className="mt-1 text-lg font-bold text-slate-900">
+                  {dailyExecutive.bestCount.label} · {dailyExecutive.bestCount.count}
+                </p>
+              </article>
+              <article className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Ticket promedio periodo</p>
+                <p className="mt-1 text-lg font-bold text-slate-900">
+                  {totalCnt > 0 ? formatMoney(String(dailyExecutive.cumulative / totalCnt)) : '—'}
+                </p>
+              </article>
+            </div>
+            <div className="rounded-lg border border-slate-200 bg-white p-4">
+              <h3 className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">
+                Facturación diaria (gráfica de área)
+              </h3>
+              <p className="mb-3 text-xs text-slate-500">
+                Evolución de importes en el periodo seleccionado, con relleno para lectura ejecutiva.
+              </p>
+              <LineTimeseriesChart
+                points={areaDailyPoints}
+                stroke="#c40000"
+                formatY={(n) => formatMoney(String(Math.round(n)))}
+              />
             </div>
           </div>
         )}
@@ -594,67 +553,91 @@ export function PowerBiPage() {
   )
 }
 
-function DailyPercentBars({ daily }: { daily: { date: string | null; count: number; amount: string }[] }) {
-  const { rows, periodTotal } = useMemo(() => {
-    let t = 0
-    for (const row of daily) {
-      const v = Number(row.amount)
-      if (Number.isFinite(v)) t += v
-    }
-    const whole = t > 0 ? t : 1
-    return {
-      periodTotal: t,
-      rows: daily.map((row) => {
-        const amt = Number(row.amount)
-        const v = Number.isFinite(amt) ? amt : 0
+function StockStyleDailyChart({ daily }: { daily: { date: string | null; count: number; amount: string }[] }) {
+  const rows = useMemo(
+    () =>
+      daily.map((row, idx) => {
+        const amountRaw = Number(row.amount)
+        const amount = Number.isFinite(amountRaw) ? amountRaw : 0
         return {
-          ...row,
-          pct: (v / whole) * 100,
-          amt: v,
+          key: row.date ?? `d-${idx}`,
+          label: row.date ? row.date.slice(5) : `—${idx}`,
+          amount,
+          count: Number.isFinite(row.count) ? row.count : 0,
         }
       }),
-    }
-  }, [daily])
+    [daily],
+  )
+
+  const maxAmount = useMemo(() => Math.max(...rows.map((r) => r.amount), 1), [rows])
+  const maxCount = useMemo(() => Math.max(...rows.map((r) => r.count), 1), [rows])
+  const totalAmount = useMemo(() => rows.reduce((a, r) => a + r.amount, 0), [rows])
 
   if (rows.length === 0) {
     return <p className="mt-4 text-sm text-slate-500">No hay ventas en el periodo.</p>
   }
 
-  const maxPct = Math.max(...rows.map((r) => r.pct), 0.001)
-
   return (
-    <div className="mt-5 space-y-4">
+    <div className="mt-5 space-y-4 rounded-lg border border-slate-200 bg-slate-50/50 p-4">
       <p className="text-xs text-slate-500">
-        Total periodo: <span className="font-semibold text-slate-800">{formatMoney(String(periodTotal))}</span>
+        Total periodo: <span className="font-semibold text-slate-800">{formatMoney(String(totalAmount))}</span>
       </p>
-      <div
-        className="flex max-h-72 snap-y flex-col gap-2 overflow-y-auto pr-1 sm:max-h-none"
-        style={{ WebkitOverflowScrolling: 'touch' }}
-      >
-        {rows.map((row, idx) => {
-          const label = row.date ? row.date.slice(5) : `—${idx}`
-          const h = Math.round((row.pct / maxPct) * 100)
-          return (
-            <div key={row.date ? `${row.date}-${idx}` : `d-${idx}`} className="flex items-center gap-3 text-xs">
-              <span className="w-10 shrink-0 font-mono text-slate-500">{label}</span>
-              <div className="min-w-0 flex-1">
-                <div className="flex justify-between gap-2">
-                  <span className="truncate text-slate-600">{row.count} tickets</span>
-                  <span className="shrink-0 tabular-nums font-semibold text-slate-800">
-                    {row.pct < 0.1 ? '<0.1' : row.pct.toFixed(1)}% · {formatMoney(String(row.amt))}
+
+      <div className="overflow-x-auto">
+        <div className="min-w-[680px] space-y-3">
+          <div className="rounded-md border border-slate-200 bg-white p-3">
+            <div className="mb-2 flex items-center justify-between text-[11px] text-slate-500">
+              <span className="font-semibold uppercase tracking-wide">Facturación diaria</span>
+              <span>Escala al máximo del periodo</span>
+            </div>
+            <div className="flex h-52 items-end gap-2 border-b border-slate-200 pb-2">
+            {rows.map((row) => {
+              const hPx = Math.max(8, Math.round((row.amount / maxAmount) * 180))
+              return (
+                <div key={`price-${row.key}`} className="flex flex-1 flex-col items-center justify-end gap-1">
+                  <span className="text-[10px] font-semibold text-slate-700">
+                    {row.amount > 0 ? formatMoney(String(row.amount)).replace('GTQ', 'Q') : '—'}
                   </span>
-                </div>
-                <div className="mt-1 h-2 overflow-hidden rounded-full bg-slate-200">
                   <div
-                    className="h-full rounded-full bg-gradient-to-r from-sky-600 to-indigo-600"
-                    style={{ width: `${Math.max(4, h)}%` }}
-                    title={`${row.date}: ${row.pct.toFixed(2)}% del periodo`}
+                    className="w-full rounded-t-sm bg-gradient-to-t from-emerald-600 to-emerald-400"
+                    style={{ height: `${hPx}px` }}
+                    title={`${row.label}: ${formatMoney(String(row.amount))}`}
                   />
                 </div>
-              </div>
+              )
+            })}
+          </div>
+          </div>
+
+          <div className="rounded-md border border-slate-200 bg-white p-3">
+            <div className="mb-2 flex items-center justify-between text-[11px] text-slate-500">
+              <span className="font-semibold uppercase tracking-wide">Actividad (tickets)</span>
+              <span>Volumen diario</span>
             </div>
-          )
-        })}
+            <div className="flex h-20 items-end gap-2 border-b border-slate-200 pb-1">
+            {rows.map((row) => {
+              const hPx = Math.max(8, Math.round((row.count / maxCount) * 56))
+              return (
+                <div key={`vol-${row.key}`} className="flex flex-1 flex-col items-center justify-end gap-1">
+                  <div
+                    className="w-full rounded-sm bg-gradient-to-t from-blue-700 to-blue-500"
+                    style={{ height: `${hPx}px` }}
+                    title={`${row.label}: ${row.count} tickets`}
+                  />
+                </div>
+              )
+            })}
+          </div>
+          </div>
+
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(40px,1fr))] gap-2 px-1 text-center text-[10px] text-slate-500">
+            {rows.map((row) => (
+              <span key={`lbl-${row.key}`} className="truncate">
+                {row.label}
+              </span>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   )

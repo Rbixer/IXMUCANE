@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Card } from '../../shared/ui/Card'
 import { useConfirm } from '../../shared/ui/ConfirmProvider'
-import { notifyError } from '../../shared/lib/notify'
+import { notifyError, notifySuccess } from '../../shared/lib/notify'
 import { DataTable } from '../../shared/ui/DataTable'
 import {
   createVacationLeave,
@@ -61,9 +61,10 @@ export function PermisosPage() {
   const deleteMutation = useMutation({
     mutationFn: deleteVacationLeave,
     onSuccess: () => {
+      notifySuccess('Registro de permisos eliminado.')
       void queryClient.invalidateQueries({ queryKey: vacationQueryKey })
     },
-    onError: (err: Error) => window.alert(err.message),
+    onError: (err: Error) => notifyError(err.message),
   })
 
   const applyPersonnelSelection = (id: number | '') => {
@@ -169,8 +170,13 @@ export function PermisosPage() {
                 <button
                   type="button"
                   className="text-xs font-semibold text-red-700 hover:underline"
-                  onClick={() => {
-                    const ok = window.confirm('Eliminar este registro de permisos?')
+                  onClick={async () => {
+                    const ok = await confirm({
+                      title: 'Eliminar permiso',
+                      message: '¿Eliminar este registro de permisos?',
+                      confirmLabel: 'Eliminar',
+                      tone: 'danger',
+                    })
                     if (!ok) return
                     deleteMutation.mutate(row.id)
                   }}

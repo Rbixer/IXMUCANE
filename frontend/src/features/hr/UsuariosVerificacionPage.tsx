@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ShieldCheck, UserPlus } from 'lucide-react'
 import { Card } from '../../shared/ui/Card'
 import { useConfirm } from '../../shared/ui/ConfirmProvider'
-import { notifyError } from '../../shared/lib/notify'
+import { notifyError, notifySuccess } from '../../shared/lib/notify'
 import { DataTable } from '../../shared/ui/DataTable'
 import { puedeGestionarCreadorYVerificacion } from '../../shared/lib/accesoSesion'
 import {
@@ -76,6 +76,7 @@ export function UsuariosVerificacionPage() {
   const deleteMutation = useMutation({
     mutationFn: deleteVerificationGrant,
     onSuccess: () => {
+      notifySuccess('Permiso de verificación revocado.')
       void queryClient.invalidateQueries({ queryKey: grantsQueryKey })
     },
     onError: (err: Error) => notifyError(err.message),
@@ -211,11 +212,6 @@ export function UsuariosVerificacionPage() {
             { key: 'codigo', label: 'Codigo' },
             { key: 'nombre_completo', label: 'Nombre' },
             { key: 'puesto', label: 'Puesto' },
-            {
-              key: 'branch_name',
-              label: 'Asignación',
-              render: (row) => (row.branch_name ?? '').trim() || '—',
-            },
             {
               key: 'full_administration',
               label: 'Admin. total',

@@ -3,6 +3,73 @@ import { Search } from 'lucide-react'
 import type { InventoryItem } from '../../shared/types/domain'
 import { formatHierarchyLabel, splitStockHierarchy } from '../../shared/lib/unitHierarchy'
 
+function PosSearchRowWithQty({
+  it,
+  disabled,
+  addLabel,
+  onAdd,
+}: {
+  it: InventoryItem
+  disabled?: boolean
+  addLabel: string
+  onAdd: (item: InventoryItem, quantity: number) => void
+}) {
+  const maxStock = Math.max(0, it.quantity)
+  const [qty, setQty] = useState(1)
+  const noDisponible = maxStock <= 0
+
+  useEffect(() => {
+    setQty((q) => {
+      if (maxStock <= 0) return 1
+      return Math.min(Math.max(1, q), maxStock)
+    })
+  }, [maxStock, it.id])
+
+  const clamped = maxStock > 0 ? Math.min(Math.max(1, Math.floor(qty) || 1), maxStock) : 1
+
+  return (
+    <li className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-transparent bg-white px-2 py-1.5 text-xs hover:border-slate-200">
+      <div className="min-w-0 flex-1">
+        <span className="font-mono text-[10px] text-slate-500">{it.sku}</span>
+        <div className="truncate font-medium text-slate-900">{it.name}</div>
+        {it.category_name ? (
+          <div className="truncate text-[10px] text-slate-500">{it.category_name}</div>
+        ) : null}
+        <div className="text-[10px] text-slate-600">
+          Stock máx. {maxStock} u. · P. unit. Q{it.unit_price}
+          {noDisponible ? <span className="ml-1 font-semibold text-red-700">· No disponible</span> : null}
+        </div>
+      </div>
+      <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+        <label className="flex flex-col items-center gap-0.5">
+          <span className="text-[9px] font-semibold uppercase text-slate-500">Cant.</span>
+          <input
+            type="number"
+            min={maxStock > 0 ? 1 : 0}
+            max={maxStock > 0 ? maxStock : 0}
+            disabled={disabled || noDisponible}
+            value={noDisponible ? 0 : qty}
+            onChange={(e) => setQty(Number(e.target.value))}
+            className="w-14 rounded border border-slate-300 px-1 py-1 text-center text-[11px] tabular-nums disabled:bg-slate-100"
+          />
+        </label>
+        <button
+          type="button"
+          disabled={disabled || noDisponible}
+          title={noDisponible ? 'No disponible (stock 0)' : 'Añadir a la venta'}
+          onClick={() => {
+            onAdd(it, clamped)
+            setQty(1)
+          }}
+          className="self-end rounded-md bg-boutique-500 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-boutique-600 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {addLabel}
+        </button>
+      </div>
+    </li>
+  )
+}
+
 function matchesQuery(it: InventoryItem, q: string): boolean {
   const t = q.trim().toLowerCase()
   if (!t) return true
@@ -22,16 +89,19 @@ export function ProductSearchAddPanel({
   title,
   addButtonLabel,
   headingClassName,
+  /** POS: cantidad por fila antes de pulsar Añadir. Recepción: suele omitirse. */
+  showQuantityBeforeAdd = false,
 }: {
   items: InventoryItem[]
   disabled?: boolean
-  onAdd: (item: InventoryItem) => void
+  onAdd: (item: InventoryItem, quantity?: number) => void
   /** `pos`: no añadir si stock 0. `purchase`: recepción, siempre se puede elegir. */
   purpose?: 'pos' | 'purchase'
   title?: string
   addButtonLabel?: string
   /** Si se omite, el título se muestra en mayúsculas pequeñas (estilo POS). */
   headingClassName?: string
+  showQuantityBeforeAdd?: boolean
 }) {
   const [q, setQ] = useState('')
   const requirePositiveStock = purpose === 'pos'
@@ -43,7 +113,8 @@ export function ProductSearchAddPanel({
   const filtered = useMemo(() => {
     const t = q.trim().toLowerCase()
     const list = t ? items.filter((it) => matchesQuery(it, t)) : items
-    return list.slice(0, 100)
+    // Sin texto: limitar para rendimiento. Con búsqueda: mostrar todas las coincidencias.
+    return t ? list : list.slice(0, 100)
   }, [items, q])
 
   const headingRowClass =
@@ -70,6 +141,16 @@ export function ProductSearchAddPanel({
       <ul className="max-h-56 space-y-1 overflow-y-auto rounded-md border border-slate-100 bg-slate-50/80 p-1">
         {filtered.length === 0 ? (
           <li className="px-2 py-3 text-center text-xs text-slate-500">Sin resultados.</li>
+        ) : showQuantityBeforeAdd && purpose === 'pos' ? (
+          filtered.map((it) => (
+            <PosSearchRowWithQty
+              key={it.id}
+              it={it}
+              disabled={disabled}
+              addLabel={addLabel}
+              onAdd={(item, quantity) => onAdd(item, quantity)}
+            />
+          ))
         ) : (
           filtered.map((it) => {
             const { fardos, paquetes, unidades } = splitStockHierarchy(
@@ -91,6 +172,7 @@ export function ProductSearchAddPanel({
                   ) : null}
                   <div className="text-[10px] text-slate-600">
                     Stock {j} · Q{it.unit_price}
+                    {it.quantity <= 0 ? <span className="ml-1 font-semibold text-red-700">· No disponible</span> : null}
                   </div>
                 </div>
                 <button
@@ -98,12 +180,12 @@ export function ProductSearchAddPanel({
                   disabled={disabled || (requirePositiveStock && it.quantity <= 0)}
                   title={
                     requirePositiveStock && it.quantity <= 0
-                      ? 'Sin stock'
+                      ? 'No disponible (stock 0)'
                       : purpose === 'purchase'
                         ? 'Añadir línea de recepción'
                         : 'Añadir a la venta'
                   }
-                  onClick={() => onAdd(it)}
+                  onClick={() => onAdd(it, 1)}
                   className="shrink-0 rounded-md bg-boutique-500 px-2.5 py-1 text-[11px] font-semibold text-white hover:bg-boutique-600 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {addLabel}

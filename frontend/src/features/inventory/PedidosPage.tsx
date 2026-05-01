@@ -1,12 +1,11 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Trash2 } from 'lucide-react'
-import { fetchProfile } from '../auth/auth.service'
 import { deletePosSale, listPosSales } from '../pos/pos.service'
 import { deletePurchaseOrder, listPurchaseOrders } from '../suppliers/suppliers.service'
 import { esModoPanelSoloSeleccion, panelTieneModuloEscritura } from '../../shared/lib/accesoSesion'
-import { getPanelBranchIdFromStorage } from '../../shared/lib/panelBranch'
 import { formatApiError } from '../../shared/lib/apiError'
+import { notifyError, notifySuccess } from '../../shared/lib/notify'
 import { useConfirm } from '../../shared/ui/ConfirmProvider'
 import type { PedidoInventoryLine } from '../../shared/types/domain'
 
@@ -67,28 +66,14 @@ export function PedidosPage() {
   const [tab, setTab] = useState<TabPedidos>('general')
   const [deleteErr, setDeleteErr] = useState('')
 
-  const profileQuery = useQuery({
-    queryKey: ['auth', 'profile'],
-    queryFn: fetchProfile,
-    staleTime: 60_000,
-  })
-  const branchFromProfile =
-    profileQuery.data?.personnel_branch_id != null &&
-    Number.isFinite(profileQuery.data.personnel_branch_id) &&
-    profileQuery.data.personnel_branch_id > 0
-      ? profileQuery.data.personnel_branch_id
-      : null
-  const branchFromStorage = modoPanelPedidos ? getPanelBranchIdFromStorage() : null
-  const branchFilter = branchFromStorage ?? branchFromProfile ?? undefined
-
   const salesQuery = useQuery({
-    queryKey: ['pos', 'sales', 'pedidos', branchFilter ?? 'all'],
-    queryFn: () => listPosSales(branchFilter),
+    queryKey: ['pos', 'sales', 'pedidos'],
+    queryFn: () => listPosSales(),
   })
 
   const ordersQuery = useQuery({
-    queryKey: ['suppliers', 'ordenes', 'pedidos', branchFilter ?? 'all'],
-    queryFn: () => listPurchaseOrders(branchFilter),
+    queryKey: ['suppliers', 'ordenes', 'pedidos'],
+    queryFn: () => listPurchaseOrders(),
     enabled: puedeTabProveedores && tab === 'proveedores',
   })
 
@@ -99,6 +84,7 @@ export function PedidosPage() {
     mutationFn: deletePosSale,
     onMutate: () => setDeleteErr(''),
     onSuccess: async () => {
+      notifySuccess('Venta eliminada. Stock devuelto al inventario.')
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['pos', 'sales'] }),
         queryClient.invalidateQueries({ queryKey: ['inventory'] }),
@@ -107,13 +93,18 @@ export function PedidosPage() {
         queryClient.invalidateQueries({ queryKey: ['reports', 'sistema-pos'] }),
       ])
     },
-    onError: (e: unknown) => setDeleteErr(formatApiError(e)),
+    onError: (e: unknown) => {
+      const msg = formatApiError(e)
+      setDeleteErr(msg)
+      notifyError(msg)
+    },
   })
 
   const deleteOrderMut = useMutation({
     mutationFn: deletePurchaseOrder,
     onMutate: () => setDeleteErr(''),
     onSuccess: async () => {
+      notifySuccess('Orden eliminada. Inventario revertido.')
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['suppliers', 'ordenes'] }),
         queryClient.invalidateQueries({ queryKey: ['inventory'] }),
@@ -121,7 +112,11 @@ export function PedidosPage() {
         queryClient.invalidateQueries({ queryKey: ['reports', 'inventario'] }),
       ])
     },
-    onError: (e: unknown) => setDeleteErr(formatApiError(e)),
+    onError: (e: unknown) => {
+      const msg = formatApiError(e)
+      setDeleteErr(msg)
+      notifyError(msg)
+    },
   })
 
   return (
@@ -132,12 +127,6 @@ export function PedidosPage() {
           Ventas (POS) y órdenes de compra con el mismo desglose que inventario: orden, producto, fardos, paquetes,
           unidades, precio de costo y precio de venta por línea.
         </p>
-        {modoPanelPedidos && branchFilter ? (
-          <p className="mt-2 text-xs text-material-muted">
-            Filtrado por su tienda asignada (#{branchFilter}). Si no ve resultados, registre ventas desde un usuario con
-            permiso POS.
-          </p>
-        ) : null}
       </header>
       {deleteErr ? (
         <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">{deleteErr}</p>
@@ -182,18 +171,18 @@ export function PedidosPage() {
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <h2 className="text-sm font-semibold text-material-emphasis">Venta #{v.id}</h2>
                 <div className="flex items-center gap-2">
-                  <span className="text-xs font-medium text-boutique-600">{v.branch_name}</span>
                   <button
                     type="button"
                     title="Eliminar venta y devolver stock"
                     disabled={!puedeEditarVentasPos || deleteSaleMut.isPending}
-                    onClick={() => {
-                      if (
-                        !window.confirm(
-                          `¿Eliminar la venta #${v.id} (Q ${v.total})? Se anulará y se devolverá el inventario.`,
-                        )
-                      )
-                        return
+                    onClick={async () => {
+                      const ok = await confirm({
+                        title: 'Eliminar venta',
+                        message: `¿Eliminar la venta #${v.id} (Q ${v.total})? Se anulará y se devolverá el inventario.`,
+                        confirmLabel: 'Eliminar',
+                        tone: 'danger',
+                      })
+                      if (!ok) return
                       deleteSaleMut.mutate(v.id)
                     }}
                     className="rounded-md border border-red-200 p-1.5 text-red-700 hover:bg-red-50 disabled:opacity-50"
@@ -207,6 +196,13 @@ export function PedidosPage() {
                 {v.payment_method === 'cash' ? 'Efectivo' : v.payment_method === 'card' ? 'Tarjeta' : 'Otro'} · Total{' '}
                 <span className="font-semibold tabular-nums text-material-emphasis">{formatMoney(v.total)}</span>
               </p>
+              {v.customer_name ? (
+                <p className="mt-1 text-xs text-material-muted">
+                  Cliente: <span className="font-medium text-material-emphasis">{v.customer_name}</span>
+                  {v.customer_phone ? ` · Tel: ${v.customer_phone}` : ''}
+                  {v.customer_email ? ` · ${v.customer_email}` : ''}
+                </p>
+              ) : null}
               <LineasPedidoTable lines={v.lines ?? []} />
             </article>
           ))}
@@ -249,7 +245,7 @@ export function PedidosPage() {
                 </div>
               </div>
               <p className="mt-1 text-xs text-material-muted">
-                {new Date(o.created_at).toLocaleString('es-GT')} · {o.branch_name}
+                {new Date(o.created_at).toLocaleString('es-GT')}
                 {o.reference ? ` · Ref: ${o.reference}` : ''}
               </p>
               <LineasPedidoTable lines={o.lines ?? []} />

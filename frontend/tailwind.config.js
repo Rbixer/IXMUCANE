@@ -4,8 +4,8 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        /** Roboto: línea visual cercana a plantillas MUI / Materially. */
-        sans: ['Roboto', 'Inter', 'system-ui', 'Segoe UI', 'sans-serif'],
+        /** Inter primero: mejor legibilidad en pantalla; Roboto como respaldo MUI. */
+        sans: ['Inter', 'Roboto', 'system-ui', 'Segoe UI', 'sans-serif'],
         display: ['"Playfair Display"', 'Georgia', 'Times New Roman', 'serif'],
       },
       colors: {

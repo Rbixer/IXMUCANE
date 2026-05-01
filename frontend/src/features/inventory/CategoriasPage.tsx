@@ -13,6 +13,7 @@ import { splitStockHierarchy } from '../../shared/lib/unitHierarchy'
 import { Card } from '../../shared/ui/Card'
 import { useConfirm } from '../../shared/ui/ConfirmProvider'
 import { esPanelSoloLecturaEnModulo } from '../../shared/lib/accesoSesion'
+import { notifyError, notifySuccess } from '../../shared/lib/notify'
 
 export function CategoriasPage() {
   const { confirm } = useConfirm()
@@ -50,10 +51,14 @@ export function CategoriasPage() {
   const deleteMut = useMutation({
     mutationFn: deleteProductCategory,
     onSuccess: () => {
+      notifySuccess('Categoría eliminada.')
       void queryClient.invalidateQueries({ queryKey: ['inventory', 'categories'] })
       void queryClient.invalidateQueries({ queryKey: ['inventory'] })
     },
-    onError: (e: Error) => setFormError(e.message),
+    onError: (e: Error) => {
+      setFormError(e.message)
+      notifyError(e.message)
+    },
   })
 
   const renameMut = useMutation({

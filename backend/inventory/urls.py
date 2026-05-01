@@ -7,6 +7,7 @@ from .views import (
     inventory_count,
     inventory_locales_count,
     inventory_locales_list,
+    inventory_transfer_by_branch,
 )
 
 router = DefaultRouter()
@@ -18,5 +19,6 @@ urlpatterns = [
     path('summary-by-branch/', inventory_branch_summary, name='inventory-summary-by-branch'),
     path('locales-count/', inventory_locales_count, name='inventory-locales-count'),
     path('locales/', inventory_locales_list, name='inventory-locales-list'),
+    path('transfer-by-branch/', inventory_transfer_by_branch, name='inventory-transfer-by-branch'),
     path('', include(router.urls)),
 ]
