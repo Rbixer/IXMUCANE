@@ -271,6 +271,17 @@ export function DashboardLayout() {
   const navReportesActivo = location.pathname.startsWith('/reportes')
   const navPosActivo = location.pathname.startsWith('/pos')
   const navUsuarioActivo = location.pathname.startsWith('/usuario')
+  const inventarioDefaultTo = useMemo(() => {
+    if (!modoPanel) return '/inventario'
+    if (can('inventario')) return '/inventario'
+    const bodegasPermitidas: Array<1 | 2 | 3> = []
+    if (can('inventario_bodega_1')) bodegasPermitidas.push(1)
+    if (can('inventario_bodega_2')) bodegasPermitidas.push(2)
+    if (can('inventario_bodega_3')) bodegasPermitidas.push(3)
+    if (bodegasPermitidas.length === 1) return `/inventario/productos?bodega=${bodegasPermitidas[0]}`
+    if (bodegasPermitidas.length > 1) return '/inventario/bodegas'
+    return '/inventario'
+  }, [modoPanel, can])
 
   const reportesSub = useMemo(
     () =>
@@ -522,7 +533,7 @@ export function DashboardLayout() {
                 {can('inventario') || can('inventario_bodega_1') || can('inventario_bodega_2') || can('inventario_bodega_3') ? (
                   <div className="pt-1">
                     <NavLink
-                      to="/inventario"
+                      to={inventarioDefaultTo}
                       title="Inventario"
                       className={({ isActive }) =>
                         `flex items-center rounded-lg py-2 text-sm font-medium ${

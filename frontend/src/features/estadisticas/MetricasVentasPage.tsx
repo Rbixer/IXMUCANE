@@ -73,7 +73,9 @@ export function MetricasVentasPage() {
           {(d?.by_branch ?? []).map((row) => (
             <li key={row.branch_id} className="flex flex-wrap items-center justify-between gap-2 py-2">
               <span className="font-medium text-material-emphasis">
-                {row.branch_name || `Punto #${row.branch_id}`}
+                {(row.branch_name ?? '').trim().toLowerCase() === 'sucursal centro'
+                  ? 'TIENDA'
+                  : row.branch_name || `Punto #${row.branch_id}`}
               </span>
               <span className="tabular-nums text-material-muted">{row.count} ventas</span>
               <span className="font-semibold tabular-nums text-boutique-600">{formatMoney(row.amount)}</span>
