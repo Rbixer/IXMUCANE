@@ -49,6 +49,7 @@ export function pathRequiresModule(pathname: string, search: string = ''): Panel
   if (p.startsWith('/reportes')) return 'reportes'
   if (p.startsWith('/pos')) return 'pos'
   if (p.startsWith('/carrito')) return 'inventario'
+  if (p.startsWith('/recursos-humanos')) return null
   return null
 }
 

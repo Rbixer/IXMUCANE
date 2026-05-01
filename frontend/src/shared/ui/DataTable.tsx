@@ -22,41 +22,46 @@ export function DataTable<T extends { id: number | string }>({
   rowClassName,
   compact = false,
 }: DataTableProps<T>) {
-  const thPad = compact ? 'px-2 py-2' : 'px-4 py-3'
+  const thPad = compact ? 'px-3 py-2.5' : 'px-4 py-3'
   const thText = compact ? 'text-[10px] leading-tight' : 'text-xs'
-  const tdPad = compact ? 'px-2 py-2' : 'px-4 py-3'
+  const tdPad = compact ? 'px-3 py-2.5' : 'px-4 py-3.5'
   const tdText = compact ? 'text-xs' : 'text-sm'
-  const emptyPad = compact ? 'px-2 py-6' : 'px-4 py-8'
+  const emptyPad = compact ? 'px-3 py-10' : 'px-4 py-12'
   const emptyText = compact ? 'text-xs' : 'text-sm'
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-material-outline">
-      <table className="min-w-full divide-y divide-material-outline bg-material-surface">
-        <thead className="bg-material-surface-variant">
-          <tr>
-            {columns.map((column) => (
+    <div className="overflow-x-auto rounded-2xl border border-gray-100 shadow-sm">
+      <table className="min-w-full divide-y divide-gray-100 bg-white">
+        <thead>
+          <tr style={{ background: '#1a1a2e' }}>
+            {columns.map((column, i) => (
               <th
                 key={String(column.key)}
-                className={`${thPad} text-left font-semibold uppercase tracking-wide text-material-muted ${thText}`}
+                className={`${thPad} text-left font-bold uppercase tracking-wider text-white/70 ${thText} ${
+                  i === 0 ? 'rounded-tl-2xl' : ''
+                } ${i === columns.length - 1 ? 'rounded-tr-2xl' : ''}`}
               >
                 {column.label}
               </th>
             ))}
           </tr>
         </thead>
-        <tbody className="divide-y divide-material-divider">
+        <tbody className="divide-y divide-gray-50">
           {rows.length === 0 ? (
             <tr>
-              <td colSpan={columns.length} className={`${emptyPad} text-center text-material-muted ${emptyText}`}>
+              <td colSpan={columns.length} className={`${emptyPad} text-center font-medium text-gray-400 ${emptyText}`}>
                 {emptyMessage}
               </td>
             </tr>
           ) : (
-            rows.map((row) => (
-              <tr key={row.id} className={rowClassName?.(row)}>
+            rows.map((row, rowIdx) => (
+              <tr
+                key={row.id}
+                className={`transition-colors hover:bg-red-50/40 ${rowIdx % 2 === 1 ? 'bg-gray-50/60' : 'bg-white'} ${rowClassName?.(row) ?? ''}`}
+              >
                 {columns.map((column) => (
-                  <td key={String(column.key)} className={`${tdPad} ${tdText} text-material-emphasis/90`}>
-                    {column.render ? column.render(row) : String(row[column.key as keyof T] ?? '-')}
+                  <td key={String(column.key)} className={`${tdPad} ${tdText} font-medium text-gray-700`}>
+                    {column.render ? column.render(row) : String(row[column.key as keyof T] ?? '—')}
                   </td>
                 ))}
               </tr>

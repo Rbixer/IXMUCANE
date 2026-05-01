@@ -50,10 +50,6 @@ export function ReportesInventarioPage() {
     () => new Set([bodegaBranchBySlot.b1, bodegaBranchBySlot.b2, bodegaBranchBySlot.b3].filter(Boolean)),
     [bodegaBranchBySlot],
   )
-  const tiendaBranchId = useMemo(() => {
-    const all = branchesQuery.data ?? []
-    return all.find((b) => b.id > 0 && !bodegaBranchIds.has(b.id))?.id ?? null
-  }, [branchesQuery.data, bodegaBranchIds])
   const filteredRows = useMemo(() => {
     if (ubicacionFiltro === 'all') return rows
     if (ubicacionFiltro === 'tienda') return rows.filter((item) => !bodegaBranchIds.has(item.branch_id))

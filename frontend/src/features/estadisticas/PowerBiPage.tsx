@@ -2,7 +2,6 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { BarChart3, LayoutDashboard, Store } from 'lucide-react'
 import { fetchPosDashboardSummary } from '../pos/pos.service'
-import { getInventoryBranchSummary } from '../inventory/inventory.service'
 import { listBranches } from '../branches/branches.service'
 import { LineTimeseriesChart } from './LineTimeseriesChart'
 
@@ -67,51 +66,6 @@ function KpiRing({
       </div>
       <p className="mt-3 text-center text-sm font-semibold text-slate-800">{label}</p>
       <p className="mt-1 text-center text-xs leading-snug text-slate-600">{subtitle}</p>
-    </div>
-  )
-}
-
-/** Dona con gradiente cónico (mezcla de categorías). */
-function ConicDona({
-  segments,
-  size = 168,
-}: {
-  segments: { pct: number; color: string; label: string }[]
-  size?: number
-}) {
-  const norm = useMemo(() => {
-    const sum = segments.reduce((a, s) => a + Math.max(0, s.pct), 0) || 1
-    let acc = 0
-    return segments.map((s) => {
-      const p = (Math.max(0, s.pct) / sum) * 100
-      const from = acc
-      acc += p
-      return { ...s, from, to: acc, slice: p }
-    })
-  }, [segments])
-
-  const gradient = norm.map((s) => `${s.color} ${s.from}% ${s.to}%`).join(', ')
-  return (
-    <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-start sm:justify-center sm:gap-8">
-      <div
-        className="shrink-0 rounded-full border-4 border-white shadow-md ring-1 ring-slate-200/80"
-        style={{
-          width: size,
-          height: size,
-          background: `conic-gradient(${gradient})`,
-        }}
-        role="img"
-        aria-label="Gráfico de proporciones"
-      />
-      <ul className="min-w-0 space-y-2 text-sm">
-        {norm.map((s) => (
-          <li key={s.label} className="flex items-center gap-2">
-            <span className="h-3 w-3 shrink-0 rounded-sm shadow-sm" style={{ backgroundColor: s.color }} />
-            <span className="font-medium text-slate-800">{s.label}</span>
-            <span className="tabular-nums text-slate-500">{Math.round(s.slice)}%</span>
-          </li>
-        ))}
-      </ul>
     </div>
   )
 }
@@ -222,12 +176,6 @@ export function PowerBiPage() {
     staleTime: 30_000,
   })
 
-  const invQuery = useQuery({
-    queryKey: ['inventory-summary', 'power-bi'],
-    queryFn: getInventoryBranchSummary,
-    staleTime: 30_000,
-  })
-
   const branchesQuery = useQuery({
     queryKey: ['branches'],
     queryFn: listBranches,
@@ -260,27 +208,6 @@ export function PowerBiPage() {
       amt: Number(b.amount),
     }))
   }, [pos?.by_branch])
-
-  const invMix = useMemo(() => {
-    const data = invQuery.data ?? {}
-    let dama = 0
-    let cab = 0
-    let mov = 0
-    let skus = 0
-    for (const row of Object.values(data)) {
-      dama += row['ropa-dama'] ?? 0
-      cab += row['ropa-caballero'] ?? 0
-      mov += row.stock_movimientos ?? 0
-      skus += row.total ?? 0
-    }
-    return { dama, cab, mov, skus }
-  }, [invQuery.data])
-
-  const movVsSkuPct = useMemo(() => {
-    const { mov, skus } = invMix
-    if (skus <= 0) return 0
-    return Math.min(999, Math.round((mov / skus) * 100))
-  }, [invMix])
 
   const dailyExecutive = useMemo(() => {
     const rows = (pos?.daily ?? []).map((row, idx) => {

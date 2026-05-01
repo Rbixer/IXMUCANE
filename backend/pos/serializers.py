@@ -97,6 +97,10 @@ class SaleReadSerializer(serializers.ModelSerializer):
             'customer_email',
             'customer_address',
             'payment_method',
+            'payment_status',
+            'credit_days',
+            'credit_note',
+            'discount',
             'total',
             'created_at',
             'lines',
@@ -107,6 +111,27 @@ class SaleReadSerializer(serializers.ModelSerializer):
 class SaleLineWriteSerializer(serializers.Serializer):
     inventory_item = serializers.PrimaryKeyRelatedField(queryset=InventoryItem.objects.all())
     quantity = serializers.IntegerField(min_value=1)
+    unit_kind = serializers.ChoiceField(
+        choices=['unit', 'package', 'fardo'],
+        default='unit',
+        required=False,
+    )
+    unit_price = serializers.DecimalField(
+        max_digits=12,
+        decimal_places=4,
+        min_value=Decimal('0'),
+        required=False,
+        allow_null=True,
+    )
+
+
+def _sale_line_multiplier(unit_kind: str, upk: int, ppf: int) -> int:
+    """Unidades base por 1 item de la unidad seleccionada."""
+    if unit_kind == 'fardo':
+        return max(1, upk) * max(1, ppf)
+    if unit_kind == 'package':
+        return max(1, upk)
+    return 1
 
 
 class SaleCreateSerializer(serializers.Serializer):
@@ -119,6 +144,17 @@ class SaleCreateSerializer(serializers.Serializer):
     customer_email = serializers.CharField(required=False, allow_blank=True, default='')
     customer_address = serializers.CharField(required=False, allow_blank=True, default='')
     payment_method = serializers.ChoiceField(choices=[c.value for c in Sale.Payment])
+    payment_status = serializers.ChoiceField(
+        choices=[c.value for c in Sale.PaymentStatus],
+        default=Sale.PaymentStatus.PAID,
+        required=False,
+    )
+    credit_days = serializers.IntegerField(min_value=0, default=0, required=False)
+    credit_note = serializers.CharField(required=False, allow_blank=True, default='')
+    discount = serializers.DecimalField(
+        max_digits=10, decimal_places=2, min_value=Decimal('0'),
+        default=Decimal('0'), required=False,
+    )
     lines = SaleLineWriteSerializer(many=True, min_length=1)
 
     def create(self, validated_data):
@@ -134,6 +170,10 @@ class SaleCreateSerializer(serializers.Serializer):
             customer_email = customer.email
             customer_address = customer.address
         payment_method = validated_data['payment_method']
+        payment_status = validated_data.get('payment_status', Sale.PaymentStatus.PAID)
+        credit_days = int(validated_data.get('credit_days') or 0)
+        credit_note = (validated_data.get('credit_note') or '').strip()
+        discount = Decimal(str(validated_data.get('discount') or 0))
         line_inputs = validated_data['lines']
 
         with transaction.atomic():
@@ -146,34 +186,65 @@ class SaleCreateSerializer(serializers.Serializer):
                 customer_email=customer_email,
                 customer_address=customer_address,
                 payment_method=payment_method,
+                payment_status=payment_status,
+                credit_days=credit_days,
+                credit_note=credit_note,
+                discount=discount,
                 total=Decimal('0'),
             )
             lines_to_create: list[SaleLine] = []
 
             for row in line_inputs:
                 item: InventoryItem = row['inventory_item']
-                qty = int(row['quantity'])
-                if item.branch_id != branch.pk:
-                    raise serializers.ValidationError(
-                        {'lines': f'El producto "{item.sku}" no pertenece al punto de inventario seleccionado.'},
-                    )
+                qty_user = int(row['quantity'])
+                unit_kind = row.get('unit_kind') or 'unit'
+
+                upk = max(1, int(item.units_per_package or 1))
+                ppf = max(1, int(item.packages_per_fardo or 1))
+                multiplier = _sale_line_multiplier(unit_kind, upk, ppf)
+                base_units = qty_user * multiplier
+
+                # Precio por unidad-usuario: override o precio del tipo
+                override = row.get('unit_price')
+                if override is not None and override >= Decimal('0'):
+                    price_per_user_unit = Decimal(str(override))
+                elif unit_kind == 'fardo':
+                    fp = Decimal(str(item.fardo_price or 0))
+                    price_per_user_unit = fp if fp > 0 else Decimal(str(item.unit_price)) * multiplier
+                elif unit_kind == 'package':
+                    pp = Decimal(str(item.package_price or 0))
+                    price_per_user_unit = pp if pp > 0 else Decimal(str(item.unit_price)) * multiplier
+                else:
+                    price_per_user_unit = Decimal(str(item.unit_price))
+
+                # Precio por unidad base (para almacenamiento consistente)
+                price_per_base = price_per_user_unit / multiplier
+
                 item = InventoryItem.objects.select_for_update().get(pk=item.pk)
-                if item.quantity < qty:
+                if item.quantity < base_units:
                     raise serializers.ValidationError(
-                        {'lines': f'Stock insuficiente para "{item.sku}" (disponible {item.quantity}, pedido {qty}).'},
+                        {
+                            'lines': (
+                                f'Stock insuficiente para "{item.sku}" '
+                                f'(disponible {item.quantity} u., pedido {base_units} u.).'
+                            )
+                        },
                     )
-                unit_price = item.unit_price
-                line_total = unit_price * qty
+
+                line_total = price_per_user_unit * qty_user
                 total += line_total
-                item.quantity -= qty
+                item.quantity -= base_units
                 item.save(update_fields=['quantity'])
-                f_j, p_j, u_j = split_stock_hierarchy(qty, item.units_per_package, item.packages_per_fardo)
+
+                f_j, p_j, u_j = split_stock_hierarchy(base_units, item.units_per_package, item.packages_per_fardo)
+                kind_label = {'fardo': 'fardo', 'package': 'paquete'}.get(unit_kind, 'unidad')
                 StockMovement.objects.create(
                     inventory_item=item,
                     movement_type=StockMovement.MovementType.OUT,
-                    quantity=qty,
+                    quantity=base_units,
                     note=(
-                        f'Venta POS #{sale.pk} — {item.name} — {qty} u. '
+                        f'Venta POS #{sale.pk} — {item.name} — '
+                        f'{qty_user} {kind_label}(s) → {base_units} u. '
                         f'(desc.: {f_j} f, {p_j} pq, {u_j} u)'
                     ),
                 )
@@ -181,13 +252,13 @@ class SaleCreateSerializer(serializers.Serializer):
                     SaleLine(
                         sale=sale,
                         inventory_item=item,
-                        quantity=qty,
-                        unit_price=unit_price,
+                        quantity=base_units,
+                        unit_price=price_per_base,
                     ),
                 )
 
             SaleLine.objects.bulk_create(lines_to_create)
-            sale.total = total
+            sale.total = max(Decimal('0'), total - discount)
             sale.save(update_fields=['total'])
 
         return sale
@@ -211,6 +282,10 @@ class SaleListSerializer(serializers.ModelSerializer):
             'customer_email',
             'customer_address',
             'payment_method',
+            'payment_status',
+            'credit_days',
+            'credit_note',
+            'discount',
             'total',
             'created_at',
             'lines_count',

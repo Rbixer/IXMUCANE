@@ -10,7 +10,6 @@ import {
   type CreateInventoryPayload,
 } from './inventory.service'
 import { listProductCategories } from './categories.service'
-import { Card } from '../../shared/ui/Card'
 import { DataTable } from '../../shared/ui/DataTable'
 import type { InventoryItem, InventoryLine } from '../../shared/types/domain'
 import { listBranches } from '../branches/branches.service'
@@ -28,12 +27,6 @@ import { useConfirm } from '../../shared/ui/ConfirmProvider'
 
 /** Línea interna única en API (catálogo local sin división dama/caballero en la interfaz). */
 const DEFAULT_LINE: InventoryLine = 'ropa-dama'
-
-const CABECERA = {
-  title: 'TIENDA',
-  subtitle:
-    'Alta y edición del inventario de tienda. Este inventario no se mezcla con bodegas; al facturar o anular un ticket el stock se sincroniza en los listados de tienda.',
-} as const
 
 function stockHierarchyLabel(item: InventoryItem): string {
   const h = item.hierarchy
@@ -121,8 +114,6 @@ export function InventoryPage() {
     return Number.isFinite(n) && n > 0 ? n : null
   }, [searchParams])
 
-  const cabecera = CABECERA
-
   const queryClient = useQueryClient()
   const saveInFlightRef = useRef(false)
   const [isModalOpen, setIsModalOpen] = useState(false)
@@ -135,6 +126,8 @@ export function InventoryPage() {
   /** Errores al eliminar desde la tabla (el modal usa `apiError`). */
   const [listDeleteError, setListDeleteError] = useState('')
   const [editingItemId, setEditingItemId] = useState<number | null>(null)
+  const [inventorySearch, setInventorySearch] = useState('')
+  const LOW_STOCK_THRESHOLD = 10
   const [form, setForm] = useState<CreateInventoryPayload>({
     name: '',
     sku: '',
@@ -213,9 +206,16 @@ export function InventoryPage() {
     bodegaSlot != null ? `Bodega ${bodegaSlot}` : branchLockedId != null ? branchById.get(branchLockedId) : undefined
   const visibleRows = useMemo(() => {
     if (bodegaSinConfigurar) return []
-    if (branchLockedId != null) return rows
-    return rows.filter((row) => !bodegaBranchIds.has(row.branch))
-  }, [rows, branchLockedId, bodegaBranchIds, bodegaSinConfigurar])
+    const base = branchLockedId != null ? rows : rows.filter((row) => !bodegaBranchIds.has(row.branch))
+    if (!inventorySearch.trim()) return base
+    const q = inventorySearch.trim().toLowerCase()
+    return base.filter(
+      (row) =>
+        row.name.toLowerCase().includes(q) ||
+        row.sku.toLowerCase().includes(q) ||
+        (row.category_name ?? '').toLowerCase().includes(q),
+    )
+  }, [rows, branchLockedId, bodegaBranchIds, bodegaSinConfigurar, inventorySearch])
 
   useEffect(() => {
     const onCart = () => setCartRevision((n) => n + 1)
@@ -571,212 +571,275 @@ export function InventoryPage() {
 
   return (
     <>
-      <div className="mx-auto w-full max-w-[min(100%,64rem)]">
-      {categoriaFiltro != null && !soloLecturaInventario ? (
-        <div className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-xl border border-violet-200 bg-violet-50/90 px-4 py-2.5 text-sm text-violet-950">
-          <p>
-            <span className="font-semibold">Filtro:</span> categoría «{nombreCategoriaFiltro ?? `#${categoriaFiltro}`}».
-          </p>
-          <button
-            type="button"
-            onClick={clearCategoriaFiltro}
-            className="rounded-md border border-violet-300 bg-white px-3 py-1 text-xs font-semibold text-violet-900 hover:bg-violet-100"
-          >
-            Quitar filtro
-          </button>
-        </div>
-      ) : null}
+      <div className="mx-auto w-full max-w-[min(100%,68rem)] space-y-4">
 
-      <Card
-        className="p-4 sm:p-5"
-        title={
-          branchLockedId != null && lockedBranchName
-            ? `${cabecera.title} — ${lockedBranchName}`
-            : cabecera.title
-        }
-        subtitle={
-          bodegaSinConfigurar
-            ? `Bodega ${bodegaSlot}: configure un punto de inventario con ese nombre exacto para manejar existencias separadas.`
-            : soloLecturaInventario
-            ? `${branchLockedId != null ? `Vista de su catálogo asignado. ` : ''}${cabecera.subtitle} Fardos, paquetes y unidades reflejan lo disponible (stock menos carrito). Pulse el producto o el icono del carrito para indicar cantidad.`
-            : branchLockedId != null
-              ? `Catálogo filtrado. ${cabecera.subtitle}`
-              : `${cabecera.subtitle} Esta vista no mezcla productos de bodegas.`
-        }
-        action={
-          soloLecturaInventario || bodegaSinConfigurar ? null : (
-            <div className="flex flex-wrap items-center justify-end gap-2">
+        {/* ── Hero header ─────────────────────────────────────────────── */}
+        <div
+          className="relative overflow-hidden rounded-2xl px-6 py-5 text-white"
+          style={{ background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%)' }}
+        >
+          <div className="absolute inset-0 opacity-10"
+            style={{ backgroundImage: 'radial-gradient(circle at 70% 50%, #DC2626 0%, transparent 60%)' }}
+          />
+          <div className="relative flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h1 className="text-xl font-black tracking-tight">
+                {branchLockedId != null && lockedBranchName
+                  ? `Inventario — ${lockedBranchName}`
+                  : 'Inventario'}
+              </h1>
+              <p className="mt-0.5 text-[13px] text-white/60 font-medium">
+                {bodegaSinConfigurar
+                  ? `Bodega ${bodegaSlot}: configure un punto de inventario con ese nombre exacto.`
+                  : soloLecturaInventario
+                  ? 'Vista de catálogo asignado. Pulse el nombre para agregar al carrito.'
+                  : 'Gestión completa del catálogo · Precios · Stock · Jerarquías'}
+              </p>
+            </div>
+            {!soloLecturaInventario && !bodegaSinConfigurar ? (
               <button
                 type="button"
                 onClick={handleOpenCreateModal}
-                className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-red-700"
+                className="flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-black text-white transition"
+                style={{ background: '#DC2626' }}
               >
-                Agregar producto
+                + Agregar producto
               </button>
+            ) : null}
+          </div>
+
+          {/* Stats rápidas */}
+          <div className="relative mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <div className="rounded-xl bg-white/10 px-4 py-3 backdrop-blur-sm">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-white/50">Productos</p>
+              <p className="mt-0.5 text-2xl font-black tabular-nums text-white">{query.data?.length ?? 0}</p>
             </div>
-          )
-        }
-      >
-        {!soloLecturaInventario && listDeleteError ? (
-          <p className="mb-3 whitespace-pre-wrap rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-            {listDeleteError}
-          </p>
+            <div className="rounded-xl bg-white/10 px-4 py-3 backdrop-blur-sm">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-white/50">Con stock</p>
+              <p className="mt-0.5 text-2xl font-black tabular-nums text-white">
+                {(query.data ?? []).filter((r) => r.quantity > 0).length}
+              </p>
+            </div>
+            <div className="rounded-xl bg-white/10 px-4 py-3 backdrop-blur-sm">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-white/50">Stock bajo</p>
+              <p className="mt-0.5 text-2xl font-black tabular-nums" style={{ color: '#FCD34D' }}>
+                {(query.data ?? []).filter((r) => r.quantity > 0 && r.quantity <= LOW_STOCK_THRESHOLD).length}
+              </p>
+            </div>
+            <div className="rounded-xl bg-white/10 px-4 py-3 backdrop-blur-sm">
+              <p className="text-[10px] font-bold uppercase tracking-wider text-white/50">Sin stock</p>
+              <p className="mt-0.5 text-2xl font-black tabular-nums" style={{ color: '#FCA5A5' }}>
+                {(query.data ?? []).filter((r) => r.quantity <= 0).length}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Filtro de categoría activo */}
+        {categoriaFiltro != null && !soloLecturaInventario ? (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-blue-100 bg-blue-50 px-4 py-2.5 text-sm">
+            <p className="font-semibold text-blue-800">
+              Filtro activo: categoría «{nombreCategoriaFiltro ?? `#${categoriaFiltro}`}»
+            </p>
+            <button
+              type="button"
+              onClick={clearCategoriaFiltro}
+              className="rounded-lg border border-blue-200 bg-white px-3 py-1 text-xs font-bold text-blue-800 hover:bg-blue-50"
+            >
+              Quitar filtro
+            </button>
+          </div>
         ) : null}
-        <DataTable<InventoryItem>
-          compact
-          columns={[
-            {
-              key: 'display_order',
-              label: 'Orden',
-              render: (item) => String(item.display_order ?? '—'),
-            },
-            {
-              key: 'name',
-              label: 'Nombre',
-              render: (item) =>
-                soloLecturaInventario ? (
-                  <div className="max-w-[11rem] sm:max-w-[12rem]">
-                    <button
-                      type="button"
-                      onClick={() => openCartModal(item)}
-                      className="text-left font-medium text-[#c40000] underline decoration-red-200 underline-offset-2 hover:text-red-800"
-                    >
-                      {item.name}
-                    </button>
-                    <p className="mt-0.5 truncate text-[11px] text-slate-600" title={item.sku}>
-                      SKU {item.sku}
-                    </p>
-                  </div>
-                ) : (
-                  <div className="max-w-[11rem] sm:max-w-[12rem]">
-                    <button
-                      type="button"
-                      onClick={() => setPreviewItem(item)}
-                      className="text-left font-medium text-[#c40000] underline decoration-red-200 underline-offset-2 hover:text-red-800"
-                    >
-                      {item.name}
-                    </button>
-                    <p className="mt-0.5 truncate text-[11px] text-slate-600" title={item.sku}>
-                      SKU {item.sku}
-                    </p>
-                  </div>
-                ),
-            },
-            {
-              key: 'categoria',
-              label: 'Categoría',
-              render: (item) => (
-                <span className="max-w-[7rem] truncate text-xs text-slate-700 sm:max-w-[9rem]" title={item.category_name ?? ''}>
-                  {(item.category_name ?? '').trim() ? item.category_name : '—'}
-                </span>
-              ),
-            },
-            {
-              key: 'units_per_package',
-              label: 'U/paquete',
-              render: (item) => (
-                <span className="tabular-nums">{Math.max(1, item.units_per_package ?? 1)}</span>
-              ),
-            },
-            {
-              key: 'units_per_fardo',
-              label: 'U/fardo',
-              render: (item) => <span className="tabular-nums">{unitsPerFardoFromItem(item)}</span>,
-            },
-            {
-              key: 'cantidad',
-              label: 'Unidades',
-              render: (item) => {
-                void cartRevision
-                return (
-                  <span
-                    className="tabular-nums font-medium text-slate-900"
-                    title={
-                      soloLecturaInventario
-                        ? 'Stock total en sistema (igual que Reportes · Inventario consolidado). El carrito reserva hasta facturar.'
-                        : 'Total de piezas en inventario (igual que Reportes · Inventario consolidado).'
-                    }
-                  >
-                    {item.quantity}
+
+        {/* ── Tabla ─────────────────────────────────────────────────────── */}
+        <div className="rounded-2xl border border-gray-100 bg-white shadow-sm">
+          {/* Barra búsqueda + contador */}
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-gray-100 px-5 py-4">
+            <p className="text-sm font-bold text-gray-600">
+              {visibleRows.length} producto{visibleRows.length !== 1 ? 's' : ''}
+              {inventorySearch ? ` · filtro: "${inventorySearch}"` : ''}
+            </p>
+            <div className="relative w-full max-w-xs">
+              <svg className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z" />
+              </svg>
+              <input
+                type="text"
+                value={inventorySearch}
+                onChange={(e) => setInventorySearch(e.target.value)}
+                placeholder="Buscar por nombre, SKU o categoría…"
+                className="w-full rounded-xl border border-gray-200 bg-gray-50 py-2 pl-9 pr-4 text-sm font-medium text-gray-800 outline-none transition focus:border-red-300 focus:bg-white focus:ring-2 focus:ring-red-100"
+              />
+            </div>
+          </div>
+
+          {!soloLecturaInventario && listDeleteError ? (
+            <div className="border-b border-red-100 bg-red-50 px-4 py-3">
+              <p className="text-sm font-semibold text-red-800">{listDeleteError}</p>
+            </div>
+          ) : null}
+
+          <DataTable<InventoryItem>
+            compact
+            columns={[
+              {
+                key: 'display_order',
+                label: '#',
+                render: (item) => (
+                  <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-gray-100 text-[10px] font-black text-gray-600">
+                    {item.display_order ?? '—'}
                   </span>
-                )
+                ),
               },
-            },
-            {
-              key: 'cost_price',
-              label: 'Precio costo',
-              render: (item) => <span className="tabular-nums">{item.cost_price ?? '0'}</span>,
-            },
-            { key: 'unit_price', label: 'Precio venta' },
-            {
-              key: 'disponibilidad',
-              label: 'Disponible',
-              render: (item) =>
-                item.quantity > 0 ? (
-                  <span className="inline-flex rounded-full bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-800">
-                    Disponible
-                  </span>
-                ) : (
-                  <span className="inline-flex rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700">
-                    No disponible
+              {
+                key: 'name',
+                label: 'Producto',
+                render: (item) =>
+                  soloLecturaInventario ? (
+                    <div className="min-w-[9rem]">
+                      <button
+                        type="button"
+                        onClick={() => openCartModal(item)}
+                        className="text-left text-sm font-bold text-red-600 hover:text-red-800 hover:underline"
+                      >
+                        {item.name}
+                      </button>
+                      <p className="mt-0.5 font-mono text-[10px] text-gray-400">SKU: {item.sku}</p>
+                    </div>
+                  ) : (
+                    <div className="min-w-[9rem]">
+                      <button
+                        type="button"
+                        onClick={() => setPreviewItem(item)}
+                        className="text-left text-sm font-bold text-red-600 hover:text-red-800 hover:underline"
+                      >
+                        {item.name}
+                      </button>
+                      <p className="mt-0.5 font-mono text-[10px] text-gray-400">SKU: {item.sku}</p>
+                    </div>
+                  ),
+              },
+              {
+                key: 'categoria',
+                label: 'Categoría',
+                render: (item) => (
+                  <span className="inline-flex items-center rounded-lg bg-gray-100 px-2.5 py-1 text-[11px] font-bold text-gray-600">
+                    {(item.category_name ?? '').trim() ? item.category_name : '—'}
                   </span>
                 ),
-            },
-            {
-              key: 'actions',
-              label: 'Acciones',
-              render: (item) => (
-                <div className="flex flex-wrap gap-1">
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      openCartModal(item)
-                    }}
-                    aria-label="Agregar al carrito"
-                    title="Agregar al carrito"
-                    className="inline-flex items-center justify-center rounded-md bg-brand-500 p-1.5 text-white transition hover:bg-brand-600"
-                  >
-                    <ShoppingCart size={15} aria-hidden />
-                  </button>
-                  {!soloLecturaInventario ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          handleEdit(item)
-                        }}
-                        aria-label="Editar producto"
-                        title="Editar producto"
-                        className="inline-flex items-center justify-center rounded-md bg-slate-900 p-1.5 text-white transition hover:bg-slate-700"
-                      >
-                        <Pencil size={15} aria-hidden />
-                      </button>
-                      <button
-                        type="button"
-                        disabled={deleteMutation.isPending}
-                        onClick={(e) => {
-                          e.preventDefault()
-                          e.stopPropagation()
-                          handleDelete(item)
-                        }}
-                        aria-label="Eliminar producto"
-                        title="Eliminar producto"
-                        className="inline-flex items-center justify-center rounded-md bg-red-600 p-1.5 text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        <Trash2 size={15} aria-hidden />
-                      </button>
-                    </>
-                  ) : null}
-                </div>
-              ),
-            },
-          ]}
-          rows={visibleRows}
-          emptyMessage={query.isLoading ? 'Cargando inventario...' : 'No hay productos registrados.'}
-        />
-      </Card>
+              },
+              {
+                key: 'units_per_package',
+                label: 'U/paq',
+                render: (item) => (
+                  <span className="tabular-nums font-bold text-gray-700">{Math.max(1, item.units_per_package ?? 1)}</span>
+                ),
+              },
+              {
+                key: 'units_per_fardo',
+                label: 'U/fardo',
+                render: (item) => <span className="tabular-nums font-bold text-gray-700">{unitsPerFardoFromItem(item)}</span>,
+              },
+              {
+                key: 'cantidad',
+                label: 'Stock',
+                render: (item) => {
+                  void cartRevision
+                  return (
+                    <div className="flex flex-col">
+                      <span className="tabular-nums text-sm font-black text-gray-900">{item.quantity}</span>
+                      <span className="text-[10px] text-gray-400">{stockHierarchyLabel(item)}</span>
+                    </div>
+                  )
+                },
+              },
+              {
+                key: 'cost_price',
+                label: 'Costo',
+                render: (item) => (
+                  <span className="tabular-nums text-xs font-semibold text-gray-500">Q {item.cost_price ?? '0'}</span>
+                ),
+              },
+              {
+                key: 'unit_price',
+                label: 'Precio venta',
+                render: (item) => (
+                  <span className="tabular-nums font-black text-gray-900">Q {item.unit_price}</span>
+                ),
+              },
+              {
+                key: 'disponibilidad',
+                label: 'Estado',
+                render: (item) => {
+                  if (item.quantity <= 0) {
+                    return (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2.5 py-1 text-[11px] font-black text-red-700">
+                        <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
+                        Sin stock
+                      </span>
+                    )
+                  }
+                  if (item.quantity <= LOW_STOCK_THRESHOLD) {
+                    return (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2.5 py-1 text-[11px] font-black text-amber-700">
+                        <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+                        Stock bajo
+                      </span>
+                    )
+                  }
+                  return (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-black text-emerald-700">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                      En stock
+                    </span>
+                  )
+                },
+              },
+              {
+                key: 'actions',
+                label: 'Acciones',
+                render: (item) => (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); openCartModal(item) }}
+                      aria-label="Agregar al carrito"
+                      title="Agregar al carrito"
+                      className="flex h-7 w-7 items-center justify-center rounded-lg bg-red-600 text-white transition hover:bg-red-700"
+                    >
+                      <ShoppingCart size={13} aria-hidden />
+                    </button>
+                    {!soloLecturaInventario ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); handleEdit(item) }}
+                          aria-label="Editar"
+                          title="Editar producto"
+                          className="flex h-7 w-7 items-center justify-center rounded-lg bg-gray-900 text-white transition hover:bg-gray-700"
+                        >
+                          <Pencil size={13} aria-hidden />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={deleteMutation.isPending}
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleDelete(item) }}
+                          aria-label="Eliminar"
+                          title="Eliminar producto"
+                          className="flex h-7 w-7 items-center justify-center rounded-lg border border-red-200 bg-red-50 text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <Trash2 size={13} aria-hidden />
+                        </button>
+                      </>
+                    ) : null}
+                  </div>
+                ),
+              },
+            ]}
+            rows={visibleRows}
+            emptyMessage={query.isLoading ? 'Cargando inventario...' : 'No hay productos registrados.'}
+          />
+        </div>
       </div>
 
       {previewItem ? (

@@ -68,6 +68,11 @@ class Sale(models.Model):
         CARD = 'card', 'Tarjeta'
         OTHER = 'other', 'Otro'
 
+    class PaymentStatus(models.TextChoices):
+        PAID    = 'paid',    'Pagado'
+        CREDIT  = 'credit',  'Crédito'
+        PENDING = 'pending', 'Pago pendiente'
+
     branch = models.ForeignKey(
         'branches.Branch',
         on_delete=models.PROTECT,
@@ -88,6 +93,20 @@ class Sale(models.Model):
         max_length=16,
         choices=Payment.choices,
         default=Payment.CASH,
+    )
+    payment_status = models.CharField(
+        max_length=16,
+        choices=PaymentStatus.choices,
+        default=PaymentStatus.PAID,
+    )
+    credit_days = models.PositiveSmallIntegerField(
+        default=0,
+        help_text='Días de plazo para ventas a crédito (0 = sin plazo definido).',
+    )
+    credit_note = models.TextField(blank=True, default='')
+    discount = models.DecimalField(
+        max_digits=10, decimal_places=2, default=0,
+        help_text='Descuento fijo aplicado al total (en quetzales).',
     )
     total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     created_at = models.DateTimeField(auto_now_add=True)

@@ -238,7 +238,6 @@ function QuotePreviewModal({
   header,
   rows,
   total,
-  /** Número oficial (#id) cuando la cotización ya está guardada en servidor. */
   savedQuoteId,
   onClose,
 }: {
@@ -259,8 +258,10 @@ function QuotePreviewModal({
   if (!open) return null
 
   const now = new Date()
-  const provisionalNo = `COT-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`
-  const displayNo = savedQuoteId != null && savedQuoteId > 0 ? `#${savedQuoteId}` : provisionalNo
+  const provisional = `COT-${now.getFullYear()}${String(now.getMonth()+1).padStart(2,'0')}${String(now.getDate()).padStart(2,'0')}-${String(now.getHours()).padStart(2,'0')}${String(now.getMinutes()).padStart(2,'0')}`
+  const displayNo   = savedQuoteId != null && savedQuoteId > 0 ? `#${savedQuoteId}` : provisional
+  const fechaStr    = now.toLocaleDateString('es-GT', { year: 'numeric', month: 'long', day: '2-digit' })
+  const subtotal    = rows.reduce((s, r) => s + r.subtotal, 0)
 
   const handlePrint = () => {
     document.body.classList.add('printing-pos-receipt')
@@ -272,106 +273,159 @@ function QuotePreviewModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 print:static print:block print:p-0">
-      <button type="button" className="absolute inset-0 bg-slate-950/60 print:hidden" onClick={onClose} aria-label="Cerrar" />
-      <div
-        className={`pos-receipt-print-root relative z-10 max-h-[90vh] w-full overflow-y-auto rounded-2xl bg-white shadow-soft print:max-h-none print:max-w-none print:overflow-visible print:rounded-none print:shadow-none ${
-          kind === 'ticket' ? 'max-w-md font-mono' : 'max-w-4xl'
-        }`}
-      >
-        <div className="sticky top-0 flex items-center justify-between border-b border-slate-200 bg-white px-4 py-3 print:hidden">
-          <h2 className="text-base font-semibold text-slate-900">
-            {kind === 'ticket' ? 'Cotización tipo ticket' : 'Cotización tipo recibo'}
-          </h2>
-          <button type="button" onClick={onClose} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100">
-            <X size={20} />
-          </button>
-        </div>
+      <button type="button" className="absolute inset-0 bg-black/60 backdrop-blur-sm print:hidden" onClick={onClose} aria-label="Cerrar" />
 
-        <div className="px-5 py-5 text-slate-800">
-          <header className={kind === 'ticket' ? 'text-center' : 'flex items-start justify-between gap-3 border-b pb-3'}>
-            <div>
-              <img src="/brand-logo-boutique.png" alt="Logo empresa" className="mx-auto mb-2 h-12 w-auto object-contain" />
-              <p className="text-xs uppercase tracking-wider text-slate-500">{header.companyName || 'Aluminios Ixmucane'}</p>
-              <p className="text-lg font-bold">{kind === 'ticket' ? 'Cotización' : 'Cotización / Recibo'}</p>
-              <p className="text-xs text-slate-600">Dirección: {header.address || '—'}</p>
-              <p className="text-xs text-slate-600">Tel. 1: {header.phone1 || '—'}</p>
-              <p className="text-xs text-slate-600">Tel. 2: {header.phone2 || '—'}</p>
-            </div>
-            <div className={kind === 'ticket' ? 'mt-2 text-xs text-slate-600' : 'text-right text-xs text-slate-600'}>
-              <p>No: {displayNo}</p>
-              <p>{now.toLocaleString('es-GT')}</p>
-            </div>
-          </header>
+      {/* ── Wrapper ──────────────────────────────────────────────────────── */}
+      <div className="pos-receipt-print-root relative z-10 flex max-h-[94vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl print:max-h-none print:max-w-none print:overflow-visible print:rounded-none print:shadow-none">
 
-          <section className="mt-3 text-sm">
-            <p>
-              <span className="font-semibold">Dirección cliente:</span> {customerAddress.trim() || '—'}
-            </p>
-            <p>
-              <span className="font-semibold">Cliente:</span> {customerName.trim() || 'Consumidor final'}
-            </p>
-            <p>
-              <span className="font-semibold">NIT/ID:</span> {customerNit.trim() || 'CF'}
-            </p>
-            <p>
-              <span className="font-semibold">Teléfono cliente:</span> {customerPhone.trim() || '—'}
-            </p>
-            <p>
-              <span className="font-semibold">Hora de entrega:</span> {deliveryTime24h.trim() || '—'}
-            </p>
-          </section>
-
-          <table className="mt-4 w-full border-collapse text-sm">
-            <thead>
-              <tr className="border-b border-slate-300 text-left text-xs uppercase text-slate-500">
-                <th className="py-1 pr-2">SKU</th>
-                <th className="py-1 pr-2">Producto</th>
-                <th className="py-1 pr-2">Tipo</th>
-                <th className="py-1 pr-2">Cant.</th>
-                <th className="py-1 pr-2">P.U.</th>
-                <th className="py-1">Subtotal</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row, idx) => (
-                <tr key={`${row.sku}-${idx}`} className="border-b border-slate-100">
-                  <td className="py-1.5 pr-2">{row.sku}</td>
-                  <td className="py-1.5 pr-2">{row.productName}</td>
-                  <td className="py-1.5 pr-2">{row.unitKindLabel}</td>
-                  <td className="py-1.5 pr-2 tabular-nums">{row.quantity}</td>
-                  <td className="py-1.5 pr-2 tabular-nums">{formatQ(row.unitPrice)}</td>
-                  <td className="py-1.5 tabular-nums">{formatQ(row.subtotal)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-
-          <div className="mt-4 flex justify-end">
-            <div className="w-full max-w-xs rounded-lg border border-slate-200 p-3">
-              <div className="flex items-center justify-between text-sm">
-                <span className="font-semibold">Total cotizado</span>
-                <span className="font-bold tabular-nums">{formatQ(total)}</span>
-              </div>
-            </div>
+        {/* Barra superior — controles (oculta al imprimir) */}
+        <div className="flex shrink-0 items-center justify-between border-b border-gray-100 bg-white px-5 py-3 print:hidden">
+          <span className="text-sm font-bold text-gray-700">Vista previa · Cotización {displayNo}</span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={handlePrint}
+              className="flex items-center gap-2 rounded-xl bg-gray-900 px-4 py-2 text-sm font-bold text-white hover:bg-gray-800"
+            >
+              <Printer size={15} /> Imprimir / PDF
+            </button>
+            <button type="button" onClick={onClose} className="flex h-9 w-9 items-center justify-center rounded-xl border border-gray-200 text-gray-500 hover:bg-gray-50">
+              <X size={18} />
+            </button>
           </div>
         </div>
 
-        <div className="flex justify-end gap-2 border-t border-slate-100 bg-white px-4 py-3 print:hidden">
-          <button
-            type="button"
-            onClick={handlePrint}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50"
-          >
-            <Printer size={16} />
-            Imprimir
-          </button>
-          <button
-            type="button"
-            onClick={onClose}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-[#c40000] px-4 py-2 text-sm font-semibold text-white hover:bg-red-800"
-          >
-            Cerrar
-          </button>
+        {/* ── Documento ────────────────────────────────────────────────── */}
+        <div className="flex-1 overflow-y-auto print:overflow-visible">
+          <div className="mx-auto w-full max-w-2xl px-8 py-8 print:px-10 print:py-10">
+
+            {/* ── Encabezado del documento ─────────────────────────────── */}
+            <div className="flex items-start justify-between gap-6 border-b-2 border-red-600 pb-6">
+              {/* Logo + datos empresa */}
+              <div className="flex items-center gap-4">
+                <img
+                  src="/logo-ixmucane.png"
+                  alt="Aluminios Ixmucane"
+                  className="h-20 w-20 object-contain"
+                />
+                <div>
+                  <p className="text-[15px] font-black uppercase tracking-wide text-gray-900">
+                    {header.companyName || 'Aluminios Ixmucane'}
+                  </p>
+                  {header.address ? <p className="text-xs text-gray-500 mt-0.5">{header.address}</p> : null}
+                  {header.phone1 ? <p className="text-xs text-gray-500">Tel: {header.phone1}{header.phone2 ? ` / ${header.phone2}` : ''}</p> : null}
+                  <p className="text-[10px] text-gray-400 mt-1">Ollas · Cubiertos · Porcelanas y Más</p>
+                </div>
+              </div>
+
+              {/* Número y fecha */}
+              <div className="text-right">
+                <div className="inline-block rounded-xl px-4 py-2" style={{ background: '#DC2626' }}>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-red-100">Cotización</p>
+                  <p className="text-xl font-black text-white">{displayNo}</p>
+                </div>
+                <p className="mt-2 text-[11px] font-semibold text-gray-500">{fechaStr}</p>
+                {kind === 'recibo' ? (
+                  <p className="text-[10px] text-gray-400">Cotización / Recibo</p>
+                ) : null}
+              </div>
+            </div>
+
+            {/* ── Datos del cliente ─────────────────────────────────────── */}
+            <div className="mt-5 grid grid-cols-2 gap-x-8 gap-y-1 rounded-xl bg-gray-50 px-5 py-4">
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Cliente</p>
+                <p className="text-sm font-bold text-gray-800">{customerName.trim() || 'Consumidor final'}</p>
+              </div>
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">NIT / ID</p>
+                <p className="text-sm font-semibold text-gray-800">{customerNit.trim() || 'CF'}</p>
+              </div>
+              {customerAddress.trim() ? (
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Dirección</p>
+                  <p className="text-sm text-gray-700">{customerAddress}</p>
+                </div>
+              ) : null}
+              {customerPhone.trim() ? (
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Teléfono</p>
+                  <p className="text-sm text-gray-700">{customerPhone}</p>
+                </div>
+              ) : null}
+              {deliveryTime24h.trim() ? (
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Entrega</p>
+                  <p className="text-sm text-gray-700">{deliveryTime24h}</p>
+                </div>
+              ) : null}
+            </div>
+
+            {/* ── Tabla de productos ────────────────────────────────────── */}
+            <table className="mt-6 w-full border-collapse text-sm">
+              <thead>
+                <tr style={{ background: '#1a1a2e' }}>
+                  <th className="rounded-tl-lg px-3 py-2.5 text-left text-[10px] font-bold uppercase tracking-wider text-white/80">SKU</th>
+                  <th className="px-3 py-2.5 text-left text-[10px] font-bold uppercase tracking-wider text-white/80">Descripción</th>
+                  <th className="px-3 py-2.5 text-center text-[10px] font-bold uppercase tracking-wider text-white/80">Tipo</th>
+                  <th className="px-3 py-2.5 text-center text-[10px] font-bold uppercase tracking-wider text-white/80">Cant.</th>
+                  <th className="px-3 py-2.5 text-right text-[10px] font-bold uppercase tracking-wider text-white/80">P. Unit.</th>
+                  <th className="rounded-tr-lg px-3 py-2.5 text-right text-[10px] font-bold uppercase tracking-wider text-white/80">Subtotal</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row, idx) => (
+                  <tr
+                    key={`${row.sku}-${idx}`}
+                    className="border-b border-gray-100"
+                    style={{ background: idx % 2 === 0 ? '#ffffff' : '#f9fafb' }}
+                  >
+                    <td className="px-3 py-2.5 font-mono text-xs text-gray-500">{row.sku}</td>
+                    <td className="px-3 py-2.5 font-semibold text-gray-800">{row.productName}</td>
+                    <td className="px-3 py-2.5 text-center">
+                      <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-bold text-gray-600">{row.unitKindLabel}</span>
+                    </td>
+                    <td className="px-3 py-2.5 text-center tabular-nums font-bold text-gray-800">{row.quantity}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums text-gray-700">{formatQ(row.unitPrice)}</td>
+                    <td className="px-3 py-2.5 text-right tabular-nums font-bold text-gray-900">{formatQ(row.subtotal)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            {/* ── Totales ───────────────────────────────────────────────── */}
+            <div className="mt-4 flex justify-end">
+              <div className="w-64 space-y-1.5">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-gray-500">Subtotal</span>
+                  <span className="tabular-nums font-semibold text-gray-700">{formatQ(subtotal)}</span>
+                </div>
+                <div className="my-1 h-px bg-gray-200" />
+                <div className="flex items-center justify-between rounded-xl px-3 py-2.5" style={{ background: '#DC2626' }}>
+                  <span className="text-sm font-black text-white">TOTAL</span>
+                  <span className="text-lg font-black tabular-nums text-white">{formatQ(total)}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Notas */}
+            {notes.trim() ? (
+              <div className="mt-5 rounded-xl border border-gray-100 bg-gray-50 px-4 py-3">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Notas</p>
+                <p className="mt-0.5 text-sm text-gray-700">{notes}</p>
+              </div>
+            ) : null}
+
+            {/* ── Pie del documento ─────────────────────────────────────── */}
+            <div className="mt-8 border-t border-gray-200 pt-4 text-center">
+              <p className="text-[11px] text-gray-400">
+                Esta cotización es válida por 7 días a partir de la fecha de emisión.
+              </p>
+              <p className="mt-1 text-[10px] font-bold uppercase tracking-wider text-gray-300">
+                {header.companyName || 'Aluminios Ixmucane'} · Gracias por su preferencia
+              </p>
+            </div>
+          </div>
         </div>
       </div>
     </div>

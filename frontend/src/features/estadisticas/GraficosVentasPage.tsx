@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { fetchPosDashboardSummary } from '../pos/pos.service'
-import type { PosDashboardDaily } from '../pos/pos.service'
 
 function formatMoney(s: string) {
   const n = Number(s)

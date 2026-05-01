@@ -35,6 +35,10 @@ export type PosSale = {
   customer_email?: string
   customer_address?: string
   payment_method: 'cash' | 'card' | 'other'
+  payment_status: PaymentStatus
+  credit_days: number
+  credit_note: string
+  discount: string
   total: string
   created_at: string
   lines: PosSaleLine[]
@@ -50,6 +54,10 @@ export type PosSaleListItem = {
   customer_email?: string
   customer_address?: string
   payment_method: 'cash' | 'card' | 'other'
+  payment_status: PaymentStatus
+  credit_days: number
+  credit_note: string
+  discount: string
   total: string
   created_at: string
   lines_count: number
@@ -57,6 +65,9 @@ export type PosSaleListItem = {
   total_units: number
   lines?: PedidoInventoryLine[]
 }
+
+export type UnitKind = 'unit' | 'package' | 'fardo'
+export type PaymentStatus = 'paid' | 'credit' | 'pending'
 
 export type SaleCreatePayload = {
   branch: number
@@ -66,7 +77,16 @@ export type SaleCreatePayload = {
   customer_email?: string
   customer_address?: string
   payment_method: 'cash' | 'card' | 'other'
-  lines: { inventory_item: number; quantity: number }[]
+  payment_status?: PaymentStatus
+  credit_days?: number
+  credit_note?: string
+  discount?: number
+  lines: {
+    inventory_item: number
+    quantity: number
+    unit_kind: UnitKind
+    unit_price: string
+  }[]
 }
 
 export type PosCustomer = {
@@ -92,6 +112,8 @@ export type PosDashboardSummary = {
   total_amount: string
   last_7_days_count: number
   last_7_days_amount: string
+  pending_collection_count: number
+  pending_collection_amount: string
   daily: PosDashboardDaily[]
   by_branch: PosDashboardBranch[]
 }
@@ -177,6 +199,10 @@ export function posSaleFromListItem(row: PosSaleListItem): PosSale | null {
     customer_email: row.customer_email ?? '',
     customer_address: row.customer_address ?? '',
     payment_method: row.payment_method,
+    payment_status: row.payment_status ?? 'paid',
+    credit_days: row.credit_days ?? 0,
+    credit_note: row.credit_note ?? '',
+    discount: row.discount ?? '0.00',
     total: row.total,
     created_at: row.created_at,
     lines: row.lines.map((l) => ({
@@ -208,6 +234,14 @@ export async function createPosSale(payload: SaleCreatePayload): Promise<PosSale
 
 export async function deletePosSale(saleId: number): Promise<void> {
   await api.delete(`/pos/sales/${saleId}/`)
+}
+
+export async function patchPosSaleStatus(
+  saleId: number,
+  payload: { payment_status: PaymentStatus; credit_note?: string },
+): Promise<PosSale> {
+  const { data } = await api.patch(`/pos/sales/${saleId}/`, payload)
+  return parsePosSaleRead(data) as PosSale
 }
 
 export async function listPosQuotes(): Promise<PosQuoteListItem[]> {

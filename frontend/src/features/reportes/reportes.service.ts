@@ -55,7 +55,31 @@ export type PosReportJson = {
   ventas: PosReportSale[]
 }
 
-type ReportSlug = 'inventario' | 'sistema-pos'
+export type SupplierReportItem = {
+  id: number
+  nombre: string
+  razon_social: string
+  nit: string
+  contacto: string
+  total_ordenes: number
+  total_lineas: number
+}
+
+export type PurchaseOrderReportItem = {
+  id: number
+  proveedor: string
+  referencia: string
+  fecha: string
+  lineas: number
+}
+
+export type SuppliersReportJson = {
+  generated_at: string
+  proveedores: SupplierReportItem[]
+  ordenes: PurchaseOrderReportItem[]
+}
+
+type ReportSlug = 'inventario' | 'sistema-pos' | 'proveedores'
 type ReportKind = 'json' | 'pdf' | 'xlsx'
 type InventoryScope = 'tienda' | 'b1' | 'b2' | 'b3'
 
@@ -125,8 +149,15 @@ export async function fetchReportPosJson(branchId?: number): Promise<PosReportJs
   return data
 }
 
+export async function fetchReportSuppliersJson(): Promise<SuppliersReportJson> {
+  const { data } = await api.get<SuppliersReportJson>(reportExportPath('proveedores', 'json'), {
+    headers: reportRequestHeaders('json'),
+  })
+  return data
+}
+
 export async function downloadReportFile(
-  path: '/reports/inventario/' | '/reports/sistema-pos/',
+  path: '/reports/inventario/' | '/reports/sistema-pos/' | '/reports/proveedores/',
   format: 'pdf' | 'xlsx',
   filename: string,
   branchId?: number,
@@ -137,7 +168,7 @@ export async function downloadReportFile(
       ? 'application/pdf'
       : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 
-  const slug: ReportSlug = path.includes('sistema-pos') ? 'sistema-pos' : 'inventario'
+  const slug: ReportSlug = path.includes('sistema-pos') ? 'sistema-pos' : path.includes('proveedores') ? 'proveedores' : 'inventario'
   const url = reportExportPath(slug, format, branchId, scope)
 
   let response: Awaited<ReturnType<typeof api.get<ArrayBuffer>>>
@@ -208,4 +239,34 @@ export async function downloadReportFile(
 
 export function saleFacturaPdfUrl(saleId: number): string {
   return `/pos/sales/${saleId}/factura-pdf/`
+}
+
+export async function downloadCobrosReport() {
+  const url = `/reports/cobros/pdf/?_t=${Date.now()}`
+  let response: Awaited<ReturnType<typeof api.get<ArrayBuffer>>>
+  try {
+    response = await api.get<ArrayBuffer>(url, {
+      responseType: 'arraybuffer',
+      headers: { Accept: 'application/json, */*;q=0.1', 'X-Boutique-Report': 'pdf', 'Cache-Control': 'no-cache' },
+      transformResponse: [(data) => data],
+    })
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response?.data instanceof ArrayBuffer) {
+      const msg = decodeApiErrorFromBuffer(err.response.data)
+      if (msg) throw new Error(msg)
+    }
+    throw err
+  }
+  const buf = response.data
+  if (!(buf instanceof ArrayBuffer) || buf.byteLength === 0) throw new Error('Archivo vacío.')
+  const blob = new Blob([buf], { type: 'application/pdf' })
+  const objectUrl = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = objectUrl
+  a.download = `cuentas_por_cobrar_${new Date().toISOString().slice(0, 10)}.pdf`
+  a.rel = 'noopener'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  queueMicrotask(() => URL.revokeObjectURL(objectUrl))
 }

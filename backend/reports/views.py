@@ -26,6 +26,7 @@ from inventory.models import InventoryItem
 from inventory.unit_hierarchy import hierarchy_label, split_stock_hierarchy
 from pos.models import Sale
 from branches.models import Branch
+from suppliers.models import PurchaseOrder, Supplier
 
 _REPORT_KINDS = frozenset({'json', 'pdf', 'xlsx'})
 
@@ -419,3 +420,217 @@ def pos_sales_report(request, salida: str | None = None):
     return _set_no_store(
         JsonResponse({'detail': 'Use /reports/sistema-pos/json/, /pdf/, /xlsx/ o query out= (o tipo=).'}, status=400)
     )
+
+
+def _suppliers_rows() -> list[dict]:
+    suppliers = Supplier.objects.prefetch_related('purchase_orders__lines').order_by('name', 'id')
+    out = []
+    for s in suppliers:
+        orders = list(s.purchase_orders.all())
+        total_lines = sum(o.lines.count() for o in orders)
+        out.append({
+            'id': s.pk,
+            'nombre': str(s) ,
+            'razon_social': s.razon_social or '',
+            'nit': s.nit or '',
+            'contacto': s.contact or '',
+            'total_ordenes': len(orders),
+            'total_lineas': total_lines,
+        })
+    return out
+
+
+def _purchase_orders_rows() -> list[dict]:
+    orders = (
+        PurchaseOrder.objects
+        .select_related('supplier', 'branch')
+        .prefetch_related('lines__inventory_item')
+        .order_by('-created_at')
+    )
+    out = []
+    for o in orders:
+        out.append({
+            'id': o.pk,
+            'proveedor': str(o.supplier),
+            'referencia': o.reference or '',
+            'fecha': o.created_at.isoformat(),
+            'lineas': o.lines.count(),
+        })
+    return out
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def suppliers_report(request, salida: str | None = None):
+    if salida is not None and str(salida).strip() != '':
+        fmt = str(salida).strip().lower()
+    else:
+        fmt = _report_export_format(request)
+    if fmt not in _REPORT_KINDS:
+        return _set_no_store(
+            JsonResponse({'detail': f'Formato no valido ({fmt}).'}, status=400)
+        )
+
+    if fmt == 'json':
+        return _set_no_store(
+            JsonResponse({
+                'generated_at': timezone.now().isoformat(),
+                'proveedores': _suppliers_rows(),
+                'ordenes': _purchase_orders_rows(),
+            })
+        )
+
+    s_rows = _suppliers_rows()
+    o_rows = _purchase_orders_rows()
+
+    if fmt == 'xlsx':
+        wb = Workbook()
+        ws = wb.active
+        ws.title = 'Proveedores'
+        _add_logo_to_ws(ws, 'A1')
+        h = ['ID', 'Nombre / Razón social', 'NIT', 'Contacto', 'Órdenes', 'Líneas totales']
+        bold = Font(bold=True)
+        header_row = 8
+        for col, title in enumerate(h, start=1):
+            ws.cell(row=header_row, column=col, value=title).font = bold
+        for r, row in enumerate(s_rows, start=header_row + 1):
+            ws.cell(row=r, column=1, value=row['id'])
+            ws.cell(row=r, column=2, value=row['nombre'])
+            ws.cell(row=r, column=3, value=row['nit'])
+            ws.cell(row=r, column=4, value=row['contacto'])
+            ws.cell(row=r, column=5, value=row['total_ordenes'])
+            ws.cell(row=r, column=6, value=row['total_lineas'])
+
+        ws2 = wb.create_sheet('Órdenes de compra')
+        _add_logo_to_ws(ws2, 'A1')
+        h2 = ['ID', 'Proveedor', 'Referencia', 'Fecha', 'Líneas']
+        for col, title in enumerate(h2, start=1):
+            ws2.cell(row=header_row, column=col, value=title).font = bold
+        for r, row in enumerate(o_rows, start=header_row + 1):
+            ws2.cell(row=r, column=1, value=row['id'])
+            ws2.cell(row=r, column=2, value=row['proveedor'])
+            ws2.cell(row=r, column=3, value=row['referencia'])
+            ws2.cell(row=r, column=4, value=row['fecha'][:19])
+            ws2.cell(row=r, column=5, value=row['lineas'])
+
+        buf = BytesIO()
+        wb.save(buf)
+        data = buf.getvalue()
+        buf.close()
+        resp = HttpResponse(
+            data,
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        resp['Content-Disposition'] = f'attachment; filename="reporte_proveedores_{datetime.now():%Y%m%d_%H%M}.xlsx"'
+        return _set_no_store(resp)
+
+    if fmt == 'pdf':
+        data_rows = [
+            [str(r['id']), r['nombre'][:40], r['nit'][:20], r['contacto'][:30], str(r['total_ordenes'])]
+            for r in s_rows[:300]
+        ]
+        return _branded_table_pdf(
+            'Proveedores — Aluminios Ixmucane',
+            'Reporte de proveedores',
+            ['ID', 'Nombre / Razón social', 'NIT', 'Contacto', 'Órdenes'],
+            data_rows,
+            f'reporte_proveedores_{datetime.now():%Y%m%d_%H%M}.pdf',
+        )
+
+    return _set_no_store(
+        JsonResponse({'detail': 'Use json, pdf o xlsx.'}, status=400)
+    )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def cobros_report(request, salida: str = 'pdf'):
+    """Reporte de cuentas por cobrar (ventas a crédito o pago pendiente)."""
+    fmt = salida if salida in _REPORT_KINDS else _report_export_format(request)
+
+    qs = (
+        Sale.objects.select_related('branch')
+        .prefetch_related('lines__inventory_item')
+        .filter(payment_status__in=['credit', 'pending'])
+        .order_by('created_at')
+    )
+    rows = []
+    for sale in qs:
+        rows.append({
+            'id': sale.pk,
+            'fecha': sale.created_at.strftime('%Y-%m-%d %H:%M'),
+            'cliente': sale.customer_name or 'Consumidor final',
+            'telefono': sale.customer_phone or '',
+            'metodo': sale.get_payment_method_display(),
+            'estado': sale.get_payment_status_display(),
+            'plazo_dias': sale.credit_days,
+            'nota': sale.credit_note,
+            'total': str(sale.total),
+        })
+
+    if fmt == 'json':
+        return _set_no_store(JsonResponse({'results': rows, 'count': len(rows)}))
+
+    if fmt == 'pdf':
+        from decimal import Decimal as D
+        total_pendiente = sum(D(r['total']) for r in rows)
+        buf = BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=BOUTIQUE_PDF_PAGE_SIZE, title='Cuentas por Cobrar')
+        styles = getSampleStyleSheet()
+        heading_left = ParagraphStyle('cobHeading', parent=styles['Heading2'], alignment=TA_LEFT)
+        normal_left  = ParagraphStyle('cobNormal',  parent=styles['Normal'],   alignment=TA_LEFT)
+        h3_left      = ParagraphStyle('cobH3',      parent=styles['Heading3'], alignment=TA_LEFT)
+        italic_left  = ParagraphStyle('cobItalic',  parent=styles['Italic'],   alignment=TA_LEFT)
+
+        logo_buf = pdf_header_image_bytes()
+        logo_buf.seek(0)
+        with PILImage.open(logo_buf) as pil_im:
+            lw, lh = pil_im.size
+        logo_buf.seek(0)
+        logo_max_w = 96.0
+        logo_w = min(logo_max_w, float(lw)) if lw else logo_max_w
+        logo_h = logo_w * (float(lh) / float(lw)) if lw else 28.0
+
+        story = [
+            PdfImage(logo_buf, width=logo_w, height=logo_h, hAlign='LEFT'),
+            Spacer(1, 8),
+            Paragraph('<b>Reporte de Cuentas por Cobrar</b>', heading_left),
+            Paragraph(f'Generado: {datetime.now().strftime("%Y-%m-%d %H:%M")}', normal_left),
+            Spacer(1, 12),
+        ]
+        data = [['Ticket', 'Fecha', 'Cliente', 'Teléfono', 'Estado', 'Plazo', 'Total']]
+        for r in rows:
+            data.append([
+                f'#{r["id"]}',
+                r['fecha'],
+                r['cliente'][:30],
+                r['telefono'][:16],
+                r['estado'],
+                f'{r["plazo_dias"]}d' if r['plazo_dias'] else '—',
+                f'Q {r["total"]}',
+            ])
+        tbl = Table(data, repeatRows=1, colWidths=[44, 88, 130, 80, 64, 36, 72])
+        tbl.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e3a5f')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#CCCCCC')),
+            ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F7FAFF')]),
+        ]))
+        story.append(tbl)
+        story.append(Spacer(1, 16))
+        story.append(Paragraph(f'<b>Total pendiente de cobro: Q {total_pendiente:.2f}</b>', h3_left))
+        story.append(Spacer(1, 24))
+        story.append(Paragraph(
+            'Este reporte incluye únicamente ventas con estado "Crédito" o "Pago pendiente".',
+            italic_left,
+        ))
+        doc.build(story)
+        pdf = buf.getvalue()
+        buf.close()
+        resp = HttpResponse(pdf, content_type='application/pdf')
+        resp['Content-Disposition'] = f'attachment; filename="cuentas_por_cobrar_{datetime.now():%Y%m%d_%H%M}.pdf"'
+        return _set_no_store(resp)
+
+    return _set_no_store(JsonResponse({'detail': 'Use json o pdf.'}, status=400))

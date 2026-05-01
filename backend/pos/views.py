@@ -96,6 +96,10 @@ def pos_sales_dashboard_summary(request):
     last_7_days_count = week_qs.count()
     last_7_days_amount = week_qs.aggregate(s=Sum('total'))['s'] or Decimal('0')
 
+    pending_qs = qs.filter(payment_status__in=['credit', 'pending'])
+    pending_count = pending_qs.count()
+    pending_amount = pending_qs.aggregate(s=Sum('total'))['s'] or Decimal('0')
+
     return Response(
         {
             'total_count': total_count,
@@ -104,6 +108,8 @@ def pos_sales_dashboard_summary(request):
             'last_7_days_amount': str(last_7_days_amount),
             'daily': daily,
             'by_branch': by_branch,
+            'pending_collection_count': pending_count,
+            'pending_collection_amount': str(pending_amount),
         }
     )
 
@@ -199,6 +205,11 @@ class SaleViewSet(
         branch = self.request.query_params.get('branch')
         if branch and str(branch).isdigit():
             qs = qs.filter(branch_id=int(branch))
+        ps = self.request.query_params.get('payment_status')
+        if ps in [c.value for c in Sale.PaymentStatus]:
+            qs = qs.filter(payment_status=ps)
+        elif ps == 'pending_collection':
+            qs = qs.filter(payment_status__in=['credit', 'pending'])
         return qs.order_by('-created_at')
 
     def get_serializer_class(self):
@@ -211,6 +222,24 @@ class SaleViewSet(
         ser.is_valid(raise_exception=True)
         sale = ser.save()
         return Response(SaleReadSerializer(sale).data, status=status.HTTP_201_CREATED)
+
+    def partial_update(self, request, *args, **kwargs):
+        """PATCH /pos/sales/{pk}/ — actualiza payment_status (y opcionalmente credit_note)."""
+        sale = self.get_object()
+        new_status = request.data.get('payment_status')
+        allowed = [c.value for c in Sale.PaymentStatus]
+        if new_status not in allowed:
+            return Response(
+                {'payment_status': f'Debe ser uno de: {", ".join(allowed)}'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        update_fields = ['payment_status']
+        sale.payment_status = new_status
+        if 'credit_note' in request.data:
+            sale.credit_note = str(request.data['credit_note'])
+            update_fields.append('credit_note')
+        sale.save(update_fields=update_fields)
+        return Response(SaleReadSerializer(sale).data)
 
     def perform_destroy(self, instance: Sale) -> None:
         with transaction.atomic():

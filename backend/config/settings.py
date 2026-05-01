@@ -10,6 +10,7 @@ For the full list of settings and their values, see
 https://docs.djangoproject.com/en/6.0/ref/settings/
 """
 
+import os
 from pathlib import Path
 from datetime import timedelta
 
@@ -19,16 +20,27 @@ from corsheaders.defaults import default_headers
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
+def _env_bool(name: str, default: str = 'false') -> bool:
+    return os.environ.get(name, default).lower() in ('1', 'true', 'yes', 'on')
+
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
-# SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-wz+(o9b=a9w+fzg+n5(51tlifj8mq!=-o58(l_a89+%6ue(!f('
+# En producción: export DJANGO_SECRET_KEY=... (nunca commitear el valor real).
+SECRET_KEY = os.environ.get(
+    'DJANGO_SECRET_KEY',
+    'django-insecure-wz+(o9b=a9w+fzg+n5(51tlifj8mq!=-o58(l_a89+%6ue(!f(',
+)
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# Producción: DJANGO_DEBUG=0 o false
+DEBUG = _env_bool('DJANGO_DEBUG', 'true')
 
-ALLOWED_HOSTS = ['127.0.0.1', 'localhost']
+_hosts = os.environ.get('DJANGO_ALLOWED_HOSTS', '').strip()
+if _hosts:
+    ALLOWED_HOSTS = [h.strip() for h in _hosts.split(',') if h.strip()]
+else:
+    ALLOWED_HOSTS = ['127.0.0.1', 'localhost']
 
 
 # Application definition
@@ -117,7 +129,7 @@ AUTH_PASSWORD_VALIDATORS = [
 # Internationalization
 # https://docs.djangoproject.com/en/6.0/topics/i18n/
 
-LANGUAGE_CODE = 'en-us'
+LANGUAGE_CODE = 'es-co'
 
 TIME_ZONE = 'America/Bogota'
 
@@ -137,16 +149,20 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
-    'http://localhost:5174',
-    'http://127.0.0.1:5174',
-    'http://localhost:5175',
-    'http://127.0.0.1:5175',
-    'http://localhost:5176',
-    'http://127.0.0.1:5176',
-]
+_cors_origins = os.environ.get('DJANGO_CORS_ORIGINS', '').strip()
+if _cors_origins:
+    CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_origins.split(',') if o.strip()]
+else:
+    CORS_ALLOWED_ORIGINS = [
+        'http://localhost:5173',
+        'http://127.0.0.1:5173',
+        'http://localhost:5174',
+        'http://127.0.0.1:5174',
+        'http://localhost:5175',
+        'http://127.0.0.1:5175',
+        'http://localhost:5176',
+        'http://127.0.0.1:5176',
+    ]
 
 CORS_ALLOW_HEADERS = list(default_headers) + ['x-boutique-report']
 
