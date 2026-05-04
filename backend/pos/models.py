@@ -5,6 +5,7 @@ class Customer(models.Model):
     """Cliente POS para autocompletado en ventas/pedidos."""
 
     name = models.CharField(max_length=200)
+    nit = models.CharField(max_length=80, blank=True, default='')
     phone = models.CharField(max_length=40, blank=True, default='')
     email = models.EmailField(blank=True, default='')
     address = models.TextField(blank=True, default='')
@@ -109,6 +110,12 @@ class Sale(models.Model):
         help_text='Descuento fijo aplicado al total (en quetzales).',
     )
     total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    amount_paid = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        default=0,
+        help_text='Suma de abonos recibidos (crédito/pendiente). Si alcanza el total, la venta queda pagada.',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

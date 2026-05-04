@@ -152,6 +152,7 @@ function CustomerHistoryDrawer({ customer, onClose }: { customer: PosCustomer; o
 export function PosClientesPage() {
   const queryClient = useQueryClient()
   const [name, setName] = useState('')
+  const [nit, setNit] = useState('')
   const [phone, setPhone] = useState('')
   const [email, setEmail] = useState('')
   const [address, setAddress] = useState('')
@@ -170,6 +171,7 @@ export function PosClientesPage() {
     mutationFn: createPosCustomer,
     onSuccess: async () => {
       setName('')
+      setNit('')
       setPhone('')
       setEmail('')
       setAddress('')
@@ -188,6 +190,7 @@ export function PosClientesPage() {
     return (customersQuery.data ?? []).filter(
       (c) =>
         c.name.toLowerCase().includes(q) ||
+        (c.nit ?? '').toLowerCase().includes(q) ||
         (c.phone ?? '').toLowerCase().includes(q) ||
         (c.email ?? '').toLowerCase().includes(q),
     )
@@ -203,6 +206,7 @@ export function PosClientesPage() {
     }
     createMutation.mutate({
       name: cleanedName,
+      nit: nit.trim(),
       phone: phone.trim(),
       email: email.trim(),
       address: address.trim(),
@@ -299,6 +303,13 @@ export function PosClientesPage() {
                 placeholder="Ej. 5555-1234"
               />
               <FieldInput
+                label="NIT"
+                icon={<Receipt size={14} />}
+                value={nit}
+                onChange={setNit}
+                placeholder="Ej. 1234567-8"
+              />
+              <FieldInput
                 label="Correo electrónico"
                 icon={<Mail size={14} />}
                 type="email"
@@ -350,7 +361,7 @@ export function PosClientesPage() {
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input
               className="w-full rounded-xl border border-gray-200 bg-gray-50 py-2 pl-9 pr-4 text-sm font-medium text-gray-800 outline-none transition focus:border-red-300 focus:bg-white focus:ring-2 focus:ring-red-100"
-              placeholder="Buscar por nombre, teléfono o email…"
+              placeholder="Buscar por nombre o NIT…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
@@ -390,6 +401,9 @@ export function PosClientesPage() {
                     Cliente
                   </th>
                   <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-wider text-white/70">
+                    NIT
+                  </th>
+                  <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-wider text-white/70">
                     Teléfono
                   </th>
                   <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-wider text-white/70">
@@ -423,6 +437,13 @@ export function PosClientesPage() {
                           </div>
                           <span className="text-sm font-bold text-gray-900">{c.name}</span>
                         </div>
+                      </td>
+                      <td className="px-4 py-3">
+                        {c.nit ? (
+                          <span className="text-sm font-semibold text-gray-700">{c.nit}</span>
+                        ) : (
+                          <span className="text-sm text-gray-300">—</span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
                         {c.phone ? (

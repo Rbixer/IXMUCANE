@@ -40,6 +40,8 @@ export type PosSale = {
   credit_note: string
   discount: string
   total: string
+  amount_paid: string
+  balance_due: string
   created_at: string
   lines: PosSaleLine[]
 }
@@ -59,6 +61,8 @@ export type PosSaleListItem = {
   credit_note: string
   discount: string
   total: string
+  amount_paid: string
+  balance_due: string
   created_at: string
   lines_count: number
   /** Suma de cantidades (unidades base) en todas las líneas. */
@@ -92,13 +96,23 @@ export type SaleCreatePayload = {
 export type PosCustomer = {
   id: number
   name: string
+  nit: string
   phone: string
   email: string
   address: string
   created_at?: string
 }
 
-export type PosDashboardDaily = { date: string | null; count: number; amount: string }
+export type PosDashboardDaily = { date: string | null; count: number; amount: string; profit: string }
+
+/** Una venta dentro del periodo seleccionado (detalle para estadísticas). */
+export type PosDashboardSaleRow = {
+  id: number
+  created_at: string
+  total: string
+  profit: string
+  lines_count: number
+}
 
 export type PosDashboardBranch = {
   branch_id: number
@@ -115,6 +129,7 @@ export type PosDashboardSummary = {
   pending_collection_count: number
   pending_collection_amount: string
   daily: PosDashboardDaily[]
+  sales: PosDashboardSaleRow[]
   by_branch: PosDashboardBranch[]
 }
 
@@ -162,6 +177,7 @@ export type QuoteCreatePayload = {
 
 export type PosCustomerCreatePayload = {
   name: string
+  nit?: string
   phone?: string
   email?: string
   address?: string
@@ -204,6 +220,10 @@ export function posSaleFromListItem(row: PosSaleListItem): PosSale | null {
     credit_note: row.credit_note ?? '',
     discount: row.discount ?? '0.00',
     total: row.total,
+    amount_paid: row.amount_paid ?? '0.00',
+    balance_due:
+      row.balance_due ??
+      String(Math.max(0, Number(row.total) - Number(row.amount_paid ?? 0))),
     created_at: row.created_at,
     lines: row.lines.map((l) => ({
       id: l.id,
@@ -238,7 +258,9 @@ export async function deletePosSale(saleId: number): Promise<void> {
 
 export async function patchPosSaleStatus(
   saleId: number,
-  payload: { payment_status: PaymentStatus; credit_note?: string },
+  payload:
+    | { payment_status: PaymentStatus; credit_note?: string }
+    | { payment_abono: number | string },
 ): Promise<PosSale> {
   const { data } = await api.patch(`/pos/sales/${saleId}/`, payload)
   return parsePosSaleRead(data) as PosSale

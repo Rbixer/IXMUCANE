@@ -1,21 +1,30 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Eye, Printer, Save, Settings, X } from 'lucide-react'
+import { Boxes, Eye, Printer, Save, Search, Settings, X } from 'lucide-react'
+import { listBranches } from '../branches/branches.service'
 import { listInventory } from '../inventory/inventory.service'
-import type { InventoryItem } from '../../shared/types/domain'
-import { ProductSearchAddPanel } from '../inventory/InventoryProductSearch'
+import type { Branch, InventoryItem } from '../../shared/types/domain'
+import { InventoryCatalogForQuote } from '../inventory/InventoryCatalogForQuote'
 import { Card } from '../../shared/ui/Card'
 import {
   createPosQuote,
   fetchPosQuote,
+  listPosCustomers,
   listPosQuotes,
+  type PosCustomer,
   type PosQuote,
   type PosQuoteListItem,
 } from './pos.service'
 
 type QuoteDocKind = 'ticket' | 'recibo'
 type QuoteUnitKind = 'unit' | 'package' | 'fardo'
-type QuoteLineDraft = { inventory_item: number; quantity: number; unit_kind: QuoteUnitKind }
+type QuoteLineDraft = {
+  inventory_item: number
+  quantity: number
+  unit_kind: QuoteUnitKind
+  /** Precio por unidad/paquete/fardo; por defecto igual al inventario, editable en cotización. */
+  unit_price: number
+}
 type QuotePanel = 'new' | 'done' | null
 type QuoteHeader = {
   companyName: string
@@ -39,6 +48,74 @@ type QuotePreviewRow = {
 }
 
 const QUOTE_HEADER_STORAGE_KEY = 'pos_quote_header_v1'
+const QUOTE_BRANCH_STORAGE_KEY = 'pos_quote_branch_v1'
+
+function normBranchName(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/**
+ * Bodega 1 / 2 / 3 por nombre de local (sin confundir «bodega 10» con «bodega 1»).
+ */
+function bodegaSlotFromName(name: string): 1 | 2 | 3 | null {
+  const raw = name.trim().toLowerCase()
+  const strict = raw.match(/^bodega\s*([123])$/i)
+  if (strict) {
+    const x = Number(strict[1])
+    return x === 1 || x === 2 || x === 3 ? (x as 1 | 2 | 3) : null
+  }
+  const n = normBranchName(name)
+  for (const num of [1, 2, 3] as const) {
+    if (new RegExp(`\\bbodega\\s*${num}\\b`).test(n)) return num
+    if (n === `bodega${num}`) return num
+  }
+  return null
+}
+
+/**
+ * Opciones de cotización alineadas con Inventario: TIENDA (/productos) + Bodega 1–3.
+ * Primero se asignan bodegas por número; el inventario de tienda es un local que no
+ * quedó como Bodega 1/2/3 (p. ej. «TIENDA»).
+ */
+function resolveCotizacionInventoryOptions(branches: Branch[]): { id: number; label: string }[] {
+  if (!branches.length) return []
+  const active = branches.filter((b) => b.id > 0)
+  const used = new Set<number>()
+
+  const bodegas: { id: number; label: string }[] = []
+  for (const num of [1, 2, 3] as const) {
+    const b = active.find((br) => !used.has(br.id) && bodegaSlotFromName(br.name) === num)
+    if (b) {
+      used.add(b.id)
+      bodegas.push({ id: b.id, label: `Bodega ${num}` })
+    }
+  }
+
+  const remaining = active.filter((b) => !used.has(b.id))
+  const takeRemaining = (pred: (b: Branch, n: string) => boolean): Branch | undefined => {
+    const hit = remaining.find((br) => pred(br, normBranchName(br.name)))
+    return hit
+  }
+
+  const tienda =
+    takeRemaining((br, n) => n === 'tienda') ??
+    takeRemaining((br, n) => n.includes('inventario') && n.includes('tienda')) ??
+    takeRemaining((br, n) => /\binventario\s+tienda\b/.test(n)) ??
+    takeRemaining((br, n) => n.includes('mostrador') && !n.includes('bodega')) ??
+    takeRemaining((br, n) => /^tienda\b/.test(n)) ??
+    takeRemaining((br, n) => n.includes('tienda') && !n.includes('bodega')) ??
+    (remaining.length === 1 ? remaining[0] : undefined)
+
+  const out: { id: number; label: string }[] = []
+  if (tienda) out.push({ id: tienda.id, label: 'Tienda' })
+  out.push(...bodegas)
+  return out
+}
 const DEFAULT_QUOTE_HEADER: QuoteHeader = {
   companyName: 'Aluminios Ixmucane',
   address: '',
@@ -103,7 +180,8 @@ function buildPreviewRowsFromDraft(
   for (const line of lines) {
     const it = itemById.get(line.inventory_item)
     if (!it) continue
-    const unit = quoteUnitPrice(it, line.unit_kind)
+    const unit =
+      Number.isFinite(line.unit_price) && line.unit_price >= 0 ? line.unit_price : quoteUnitPrice(it, line.unit_kind)
     const subtotal = unit * line.quantity
     out.push({
       sku: it.sku,
@@ -434,11 +512,14 @@ function QuotePreviewModal({
 
 export function PosCotizacionesPage() {
   const queryClient = useQueryClient()
+  const customerSuggestRef = useRef<HTMLDivElement>(null)
+  const [customerSearch, setCustomerSearch] = useState('')
   const [customerName, setCustomerName] = useState('')
   const [customerNit, setCustomerNit] = useState('')
   const [customerAddress, setCustomerAddress] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
   const [deliveryTime24h, setDeliveryTime24h] = useState('')
+  const [customerDropOpen, setCustomerDropOpen] = useState(false)
   const [lines, setLines] = useState<QuoteLineDraft[]>([])
   const [docKind, setDocKind] = useState<QuoteDocKind>('ticket')
   const [previewOpen, setPreviewOpen] = useState(false)
@@ -449,6 +530,9 @@ export function PosCotizacionesPage() {
   const [activePanel, setActivePanel] = useState<QuotePanel>(null)
   const [headerConfig, setHeaderConfig] = useState<QuoteHeader>(DEFAULT_QUOTE_HEADER)
   const [headerModalOpen, setHeaderModalOpen] = useState(false)
+  const [quoteBranchId, setQuoteBranchId] = useState<number | null>(null)
+  const panelButtonBaseClass =
+    'inline-flex h-16 w-full items-center justify-center rounded-xl border-2 px-10 text-lg font-semibold shadow-sm sm:w-[20rem]'
 
   useEffect(() => {
     const raw = window.localStorage.getItem(QUOTE_HEADER_STORAGE_KEY)
@@ -466,15 +550,88 @@ export function PosCotizacionesPage() {
     }
   }, [])
 
-  const invQuery = useQuery({
-    queryKey: ['inventory', 'cotizaciones', 'all'],
-    queryFn: () => listInventory(),
+  const branchesQuery = useQuery({
+    queryKey: ['branches'],
+    queryFn: listBranches,
+    staleTime: 60_000,
   })
+
+  const cotizacionInventoryOptions = useMemo(
+    () => resolveCotizacionInventoryOptions(branchesQuery.data ?? []),
+    [branchesQuery.data],
+  )
+
+  useEffect(() => {
+    const opts = cotizacionInventoryOptions
+    if (!opts.length) return
+    const allowed = new Set(opts.map((o) => o.id))
+    setQuoteBranchId((prev) => {
+      if (prev != null && allowed.has(prev)) return prev
+      const tiendaOpt = opts.find((o) => o.label === 'Tienda' || o.label === 'Inventario tienda')
+      if (tiendaOpt && allowed.has(tiendaOpt.id)) return tiendaOpt.id
+      try {
+        const raw = window.localStorage.getItem(QUOTE_BRANCH_STORAGE_KEY)
+        const sid = raw ? parseInt(raw, 10) : NaN
+        if (Number.isFinite(sid) && allowed.has(sid)) return sid
+      } catch {
+        /* ignore */
+      }
+      return opts[0].id
+    })
+  }, [cotizacionInventoryOptions])
+
+  useEffect(() => {
+    if (!branchesQuery.isFetched) return
+    if (cotizacionInventoryOptions.length > 0) return
+    setQuoteBranchId(null)
+  }, [branchesQuery.isFetched, cotizacionInventoryOptions.length])
+
+  const invQuery = useQuery({
+    queryKey: ['inventory', 'cotizaciones', quoteBranchId ?? 'all'],
+    queryFn: () =>
+      quoteBranchId != null ? listInventory({ branch: quoteBranchId }) : listInventory(),
+    enabled:
+      branchesQuery.isFetched &&
+      (cotizacionInventoryOptions.length === 0 || quoteBranchId != null),
+  })
+
+  const selectQuoteBranch = (id: number) => {
+    if (id === quoteBranchId) return
+    if (lines.length > 0) {
+      const ok = window.confirm(
+        'Al cambiar de inventario se borrarán las líneas agregadas a la cotización. ¿Desea continuar?',
+      )
+      if (!ok) return
+      setLines([])
+    }
+    setQuoteBranchId(id)
+    try {
+      window.localStorage.setItem(QUOTE_BRANCH_STORAGE_KEY, String(id))
+    } catch {
+      /* ignore */
+    }
+  }
 
   const quotesQuery = useQuery({
     queryKey: ['pos', 'quotes'],
     queryFn: () => listPosQuotes(),
   })
+  const customersQuery = useQuery({
+    queryKey: ['pos', 'customers', customerSearch.trim().toLowerCase()],
+    queryFn: () => listPosCustomers(customerSearch),
+    staleTime: 30_000,
+    enabled: customerSearch.trim().length > 0,
+  })
+
+  useEffect(() => {
+    if (!customerDropOpen) return
+    const cb = (e: MouseEvent) => {
+      if (customerSuggestRef.current?.contains(e.target as Node)) return
+      setCustomerDropOpen(false)
+    }
+    document.addEventListener('mousedown', cb)
+    return () => document.removeEventListener('mousedown', cb)
+  }, [customerDropOpen])
 
   const saveMutation = useMutation({
     mutationFn: createPosQuote,
@@ -483,6 +640,7 @@ export function PosCotizacionesPage() {
       setSuccessMsg(`Cotización guardada con número #${data.id}.`)
       setError('')
       setCustomerName('')
+      setCustomerSearch('')
       setCustomerNit('')
       setCustomerAddress('')
       setCustomerPhone('')
@@ -505,7 +663,9 @@ export function PosCotizacionesPage() {
     for (const line of lines) {
       const it = itemById.get(line.inventory_item)
       if (!it) continue
-      sum += quoteUnitPrice(it, line.unit_kind) * line.quantity
+      const up =
+        Number.isFinite(line.unit_price) && line.unit_price >= 0 ? line.unit_price : quoteUnitPrice(it, line.unit_kind)
+      sum += up * line.quantity
     }
     return sum
   }, [lines, itemById])
@@ -516,7 +676,15 @@ export function PosCotizacionesPage() {
     setLines((prev) => {
       const ix = prev.findIndex((l) => l.inventory_item === item.id)
       if (ix >= 0) return prev.map((l, i) => (i === ix ? { ...l, quantity: l.quantity + 1 } : l))
-      return [...prev, { inventory_item: item.id, quantity: 1, unit_kind: 'unit' }]
+      return [
+        ...prev,
+        {
+          inventory_item: item.id,
+          quantity: 1,
+          unit_kind: 'unit',
+          unit_price: quoteUnitPrice(item, 'unit'),
+        },
+      ]
     })
   }
 
@@ -526,9 +694,33 @@ export function PosCotizacionesPage() {
     )
   }
 
+  const setLineUnitPrice = (idx: number, raw: string) => {
+    setLines((prev) =>
+      prev.map((l, i) => {
+        if (i !== idx) return l
+        const it = itemById.get(l.inventory_item)
+        const t = raw.trim()
+        if (t === '' && it) {
+          return { ...l, unit_price: quoteUnitPrice(it, l.unit_kind) }
+        }
+        const n = parseFloat(t.replace(',', '.'))
+        if (!Number.isFinite(n) || n < 0) return l
+        return { ...l, unit_price: n }
+      }),
+    )
+  }
+
   const removeLine = (idx: number) => setLines((prev) => prev.filter((_, i) => i !== idx))
   const setLineUnitKind = (idx: number, kind: QuoteUnitKind) =>
-    setLines((prev) => prev.map((l, i) => (i === idx ? { ...l, unit_kind: kind } : l)))
+    setLines((prev) =>
+      prev.map((l, i) => {
+        if (i !== idx) return l
+        const it = itemById.get(l.inventory_item)
+        return it
+          ? { ...l, unit_kind: kind, unit_price: quoteUnitPrice(it, kind) }
+          : { ...l, unit_kind: kind }
+      }),
+    )
 
   const openPreview = (kind: QuoteDocKind) => {
     setError('')
@@ -559,7 +751,7 @@ export function PosCotizacionesPage() {
         setError('Un producto de la lista ya no está en el catálogo. Quite la línea o vuelva a cargar.')
         return
       }
-      const pu = quoteUnitPrice(it, l.unit_kind)
+      const pu = Number.isFinite(l.unit_price) && l.unit_price >= 0 ? l.unit_price : quoteUnitPrice(it, l.unit_kind)
       payloadLines.push({
         inventory_item: l.inventory_item,
         quantity: l.quantity,
@@ -587,6 +779,15 @@ export function PosCotizacionesPage() {
     } finally {
       setLoadingQuoteId(null)
     }
+  }
+
+  const onPickCustomer = (c: PosCustomer) => {
+    setCustomerSearch(c.name || c.nit || '')
+    setCustomerName(c.name || '')
+    setCustomerNit(c.nit || '')
+    setCustomerPhone(c.phone || '')
+    setCustomerAddress(c.address || '')
+    setCustomerDropOpen(false)
   }
 
   return (
@@ -649,14 +850,14 @@ export function PosCotizacionesPage() {
             <button
               type="button"
               onClick={() => setActivePanel('new')}
-              className="rounded-xl border-2 border-[#c40000] bg-[#c40000] px-8 py-4 text-base font-semibold text-white shadow-sm hover:bg-red-800"
+              className={`${panelButtonBaseClass} border-[#c40000] bg-[#c40000] text-white hover:bg-red-800`}
             >
               Nuevas cotizaciones
             </button>
             <button
               type="button"
               onClick={() => setActivePanel('done')}
-              className="rounded-xl border-2 border-[#c40000] bg-white px-8 py-4 text-base font-semibold text-[#c40000] shadow-sm hover:bg-red-50"
+              className={`${panelButtonBaseClass} border-[#c40000] bg-white text-[#c40000] hover:bg-red-50`}
             >
               Cotizaciones realizadas
             </button>
@@ -703,6 +904,57 @@ export function PosCotizacionesPage() {
           title="Nuevas cotizaciones"
           subtitle="Arme la cotización y guárdela para obtener un número correlativo. No se descuenta inventario."
         >
+          <div className="mb-5 rounded-xl border border-slate-200 bg-slate-50/80 p-4">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
+              <div className="min-w-0 max-w-xl shrink">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Boxes size={16} className="shrink-0 text-slate-500" aria-hidden />
+                  <p className="text-sm font-semibold text-slate-800">Inventario / catálogo</p>
+                </div>
+                <p className="mt-0.5 text-xs leading-relaxed text-slate-500">
+                  Elija inventario tienda o una bodega. Si cambia de origen y ya tenía líneas, se vaciará el detalle.
+                </p>
+              </div>
+              {!branchesQuery.isLoading &&
+              (branchesQuery.data ?? []).length > 0 &&
+              cotizacionInventoryOptions.length > 0 ? (
+                <div className="flex shrink-0 justify-end sm:ml-auto sm:max-w-[min(100%,12rem)]">
+                  <label className="block w-full min-w-[10.5rem] sm:w-44">
+                    <span className="sr-only">Inventario</span>
+                    <select
+                      className="w-full rounded-xl border border-slate-300 bg-white px-2.5 py-2 text-sm font-semibold text-slate-900 shadow-sm outline-none ring-[#c40000]/20 focus:ring-2"
+                      value={quoteBranchId ?? ''}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        if (!v) return
+                        selectQuoteBranch(Number(v))
+                      }}
+                    >
+                      <option value="" disabled>
+                        Elija inventario…
+                      </option>
+                      {cotizacionInventoryOptions.map((o) => (
+                        <option key={o.id} value={o.id}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              ) : null}
+            </div>
+            {branchesQuery.isLoading ? (
+              <p className="mt-3 text-sm text-slate-500">Cargando locales…</p>
+            ) : (branchesQuery.data ?? []).length === 0 ? (
+              <p className="mt-3 text-sm text-amber-800">No hay locales configurados; se usa el catálogo completo.</p>
+            ) : cotizacionInventoryOptions.length === 0 ? (
+              <p className="mt-3 text-sm text-amber-800">
+                No se encontró ningún local de tienda o Bodega 1–3. Ajuste los nombres en
+                administración de locales o use otro módulo de inventario.
+              </p>
+            ) : null}
+          </div>
+
           <form
             className="space-y-4"
             onSubmit={(e) => {
@@ -714,6 +966,43 @@ export function PosCotizacionesPage() {
               <p className="rounded-lg border border-emerald-200 bg-emerald-50 p-2 text-sm text-emerald-900">{successMsg}</p>
             ) : null}
             {error ? <p className="rounded-lg border border-red-200 bg-red-50 p-2 text-sm text-red-800">{error}</p> : null}
+
+            <div ref={customerSuggestRef} className="relative">
+              <label className="text-sm font-semibold text-slate-700">
+                Buscar cliente (nombre o NIT)
+                <div className="relative mt-1">
+                  <Search size={14} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    className="w-full rounded-lg border border-slate-300 bg-white py-2 pl-9 pr-3 text-sm"
+                    value={customerSearch}
+                    onChange={(e) => {
+                      setCustomerSearch(e.target.value)
+                      setCustomerDropOpen(true)
+                    }}
+                    onFocus={() => customerSearch.trim() && setCustomerDropOpen(true)}
+                    placeholder="Ej. Juan Pérez o 1234567-8"
+                  />
+                </div>
+              </label>
+              {customerDropOpen && customerSearch.trim() && (customersQuery.data ?? []).length > 0 ? (
+                <div className="absolute z-20 mt-1 max-h-52 w-full overflow-auto rounded-lg border border-slate-200 bg-white shadow-lg">
+                  {(customersQuery.data ?? []).slice(0, 8).map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => onPickCustomer(c)}
+                      className="flex w-full items-start justify-between gap-3 border-b border-slate-100 px-3 py-2 text-left hover:bg-slate-50 last:border-b-0"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-slate-900">{c.name || 'Sin nombre'}</p>
+                        <p className="truncate text-xs text-slate-500">NIT: {c.nit || '—'} · Tel: {c.phone || '—'}</p>
+                      </div>
+                      <span className="shrink-0 text-[10px] text-slate-400">#{c.id}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
 
             <div className="grid gap-3 sm:grid-cols-2">
               <label className="text-sm font-semibold text-slate-700">
@@ -764,11 +1053,10 @@ export function PosCotizacionesPage() {
               />
             </label>
 
-            <ProductSearchAddPanel
+            <InventoryCatalogForQuote
+              key={quoteBranchId ?? 'all'}
               items={items}
-              purpose="purchase"
-              title="Agregar productos a cotización"
-              addButtonLabel="Agregar"
+              isLoading={invQuery.isLoading}
               onAdd={(item) => addProduct(item)}
             />
 
@@ -781,39 +1069,61 @@ export function PosCotizacionesPage() {
                   {lines.map((line, idx) => {
                     const it = itemById.get(line.inventory_item)
                     if (!it) return null
-                    const unit = quoteUnitPrice(it, line.unit_kind)
+                    const catalogPrice = quoteUnitPrice(it, line.unit_kind)
+                    const unit =
+                      Number.isFinite(line.unit_price) && line.unit_price >= 0 ? line.unit_price : catalogPrice
                     const lineTotal = unit * line.quantity
                     return (
-                      <li key={`${line.inventory_item}-${idx}`} className="flex flex-wrap items-end gap-2 rounded-lg border border-slate-200 p-2">
-                        <div className="min-w-0 flex-1">
+                      <li
+                        key={`${line.inventory_item}-${idx}`}
+                        className="flex flex-wrap items-end gap-2 rounded-lg border border-slate-200 p-2 sm:items-center"
+                      >
+                        <div className="min-w-0 basis-full sm:basis-auto sm:flex-1">
                           <p className="text-xs text-slate-500">SKU {it.sku}</p>
                           <p className="text-sm font-semibold text-slate-900">{it.name}</p>
-                          <p className="text-xs text-slate-600">
-                            Precio seleccionado ({unitKindLabel(line.unit_kind)}):{' '}
-                            <span className="font-semibold tabular-nums">{formatQ(unit)}</span>
+                          <p className="mt-0.5 text-[10px] text-slate-400">
+                            Inventario ({unitKindLabel(line.unit_kind)}): {formatQ(catalogPrice)}
                           </p>
                         </div>
                         <select
                           value={line.unit_kind}
                           onChange={(e) => setLineUnitKind(idx, e.target.value as QuoteUnitKind)}
-                          className="w-28 rounded-md border border-slate-300 px-2 py-1 text-sm"
+                          className="w-28 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
                         >
                           <option value="unit">Unidad</option>
                           <option value="package">Paquete</option>
                           <option value="fardo">Fardo</option>
                         </select>
-                        <input
-                          type="number"
-                          min={1}
-                          value={line.quantity}
-                          onChange={(e) => setLineQty(idx, Number(e.target.value))}
-                          className="w-24 rounded-md border border-slate-300 px-2 py-1 text-sm tabular-nums"
-                        />
-                        <div className="text-right text-sm font-semibold tabular-nums text-slate-900">{formatQ(lineTotal)}</div>
+                        <label className="flex flex-col gap-0.5 text-[10px] font-semibold uppercase text-slate-500">
+                          Cant.
+                          <input
+                            type="number"
+                            min={1}
+                            value={line.quantity}
+                            onChange={(e) => setLineQty(idx, Number(e.target.value))}
+                            className="w-20 rounded-md border border-slate-300 px-2 py-1.5 text-sm tabular-nums"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-0.5 text-[10px] font-semibold uppercase text-slate-500">
+                          Precio (Q)
+                          <input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={unit}
+                            onChange={(e) => setLineUnitPrice(idx, e.target.value)}
+                            title="Por defecto precio de inventario; puede cambiarlo para esta cotización. Vacíe para restaurar inventario."
+                            className="w-28 rounded-md border border-slate-300 px-2 py-1.5 text-sm font-semibold tabular-nums text-slate-900"
+                          />
+                        </label>
+                        <div className="flex flex-col items-end justify-center gap-0.5 sm:min-w-[5rem]">
+                          <span className="text-[10px] font-semibold uppercase text-slate-500">Subtotal</span>
+                          <span className="text-sm font-semibold tabular-nums text-slate-900">{formatQ(lineTotal)}</span>
+                        </div>
                         <button
                           type="button"
                           onClick={() => removeLine(idx)}
-                          className="rounded-md px-2 py-1 text-xs font-semibold text-red-700 hover:bg-red-50"
+                          className="rounded-md px-2 py-1.5 text-xs font-semibold text-red-700 hover:bg-red-50"
                         >
                           Quitar
                         </button>

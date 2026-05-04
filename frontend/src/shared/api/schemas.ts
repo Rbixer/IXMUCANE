@@ -144,6 +144,7 @@ export function parseStockMovementsList(data: unknown) {
 }
 
 const paymentMethodSchema = z.enum(['cash', 'card', 'other'])
+const paymentStatusSchema = z.enum(['paid', 'credit', 'pending'])
 
 /** Línea de venta u orden (recepción) con desglose f/p/u y precios. */
 export const pedidoInventoryLineSchema = z.object({
@@ -180,7 +181,13 @@ export const posSaleReadSchema = z.object({
   customer_email: z.string().optional().default(''),
   customer_address: z.string().optional().default(''),
   payment_method: paymentMethodSchema,
+  payment_status: paymentStatusSchema.optional().default('paid'),
+  credit_days: z.coerce.number().int().min(0).optional().default(0),
+  credit_note: z.string().optional().default(''),
+  discount: priceString.optional().default('0.00'),
   total: priceString,
+  amount_paid: priceString.optional().default('0.00'),
+  balance_due: priceString.optional().default('0.00'),
   created_at: z.string(),
   lines: z.array(posSaleLineReadSchema),
 })
@@ -195,7 +202,13 @@ export const posSaleListItemSchema = z.object({
   customer_email: z.string().optional().default(''),
   customer_address: z.string().optional().default(''),
   payment_method: paymentMethodSchema,
+  payment_status: paymentStatusSchema.optional().default('paid'),
+  credit_days: z.coerce.number().int().min(0).optional().default(0),
+  credit_note: z.string().optional().default(''),
+  discount: priceString.optional().default('0.00'),
   total: priceString,
+  amount_paid: priceString.optional().default('0.00'),
+  balance_due: priceString.optional().default('0.00'),
   created_at: z.string(),
   lines_count: z.coerce.number().int().min(0),
   total_units: z.coerce.number().int().min(0).default(0),
@@ -214,6 +227,8 @@ const posDashboardDailySchema = z.object({
   date: z.union([z.string(), z.null()]),
   count: z.coerce.number().int().min(0),
   amount: priceString,
+  /** Ganancia bruta del día: Σ (precio venta − costo catálogo) × unidades por línea. */
+  profit: priceString.optional().default('0.00'),
 })
 
 const posDashboardBranchSchema = z.object({
@@ -223,12 +238,21 @@ const posDashboardBranchSchema = z.object({
   amount: priceString,
 })
 
+const posDashboardSaleRowSchema = z.object({
+  id: idCoerce,
+  created_at: z.string(),
+  total: priceString,
+  profit: priceString,
+  lines_count: z.coerce.number().int().min(0),
+})
+
 export const posDashboardSummarySchema = z.object({
   total_count: z.coerce.number().int().min(0),
   total_amount: priceString,
   last_7_days_count: z.coerce.number().int().min(0),
   last_7_days_amount: priceString,
   daily: z.array(posDashboardDailySchema),
+  sales: z.array(posDashboardSaleRowSchema).optional().default([]),
   by_branch: z.array(posDashboardBranchSchema),
 })
 
@@ -277,6 +301,7 @@ export function parsePosQuotesList(data: unknown) {
 export const posCustomerSchema = z.object({
   id: idCoerce,
   name: z.string(),
+  nit: z.string().optional().default(''),
   phone: z.string().optional().default(''),
   email: z.string().optional().default(''),
   address: z.string().optional().default(''),

@@ -20,6 +20,7 @@ import {
   X,
   ChevronRight,
   Bell,
+  Zap,
 } from 'lucide-react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { authStorage } from '../../shared/lib/auth'
@@ -34,6 +35,18 @@ import { formatApiError } from '../../shared/lib/apiError'
 import { pathRequiresModule, type PanelModuleId } from '../../shared/lib/panelModules'
 
 const SIDEBAR_WIDE_KEY = 'boutique_sidebar_wide'
+
+/** Botón módulo lateral: degradado índigo (#3b3da1 → #24255d), texto blanco. */
+const NAV_MODULE_BTN =
+  'border-0 bg-gradient-to-r from-[#3b3da1] to-[#24255d] font-semibold text-white shadow-sm hover:from-[#4d50c4] hover:to-[#2e3175]'
+const NAV_MODULE_BTN_ACTIVE =
+  'border-0 bg-gradient-to-r from-[#2f3289] to-[#161733] font-semibold text-white shadow-md ring-2 ring-white/35'
+
+/** Submenú POS: fondo rojo, texto blanco (sin negro mate). */
+const NAV_POS_SUB_BTN =
+  'border-0 bg-red-600 font-semibold text-white shadow-sm hover:bg-red-700'
+const NAV_POS_SUB_ACTIVE =
+  'relative border-0 bg-gradient-to-r from-red-700 to-red-900 font-semibold text-white shadow-md ring-2 ring-white/30 before:absolute before:left-1 before:top-[15%] before:h-[70%] before:w-[3px] before:rounded-full before:bg-white'
 
 function readSidebarWide(): boolean {
   if (typeof localStorage === 'undefined') return true
@@ -88,11 +101,11 @@ function SideNavItem({
       className={({ isActive }) => {
         const active = forceActive !== undefined ? forceActive : isActive
         return [
-          'group relative flex items-center rounded-xl transition-all duration-150',
-          wide ? 'gap-3 px-3 py-2.5' : 'justify-center py-2.5',
+          'group relative flex w-full items-center rounded-full transition-all duration-150',
+          wide ? 'gap-3 px-4 py-3' : 'justify-center px-1 py-2.5',
           active
-            ? 'bg-red-50 text-red-700 font-semibold before:absolute before:left-0 before:top-[15%] before:h-[70%] before:w-[3px] before:rounded-full before:bg-red-500'
-            : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900',
+            ? `${NAV_MODULE_BTN_ACTIVE} before:absolute before:left-1 before:top-[15%] before:h-[70%] before:w-[3px] before:rounded-full before:bg-white`
+            : NAV_MODULE_BTN,
         ].join(' ')
       }}
     >
@@ -108,11 +121,14 @@ function SideSubItem({
   Icon,
   label,
   exact = false,
+  variant = 'default',
 }: {
   to: string
   Icon: React.ElementType
   label: string
   exact?: boolean
+  /** `pos`: tonos negro/carbón para submenú de Punto de Venta. */
+  variant?: 'default' | 'pos'
 }) {
   return (
     <NavLink
@@ -120,10 +136,14 @@ function SideSubItem({
       end={exact}
       className={({ isActive }) =>
         [
-          'flex items-center gap-2.5 rounded-lg px-3 py-2 text-xs font-medium transition-all duration-150',
+          'flex w-full items-center gap-3 rounded-full px-4 py-2.5 text-sm font-semibold transition-all duration-150',
           isActive
-            ? 'bg-red-50 text-red-700 font-semibold'
-            : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900',
+            ? variant === 'pos'
+              ? NAV_POS_SUB_ACTIVE
+              : NAV_MODULE_BTN_ACTIVE
+            : variant === 'pos'
+              ? NAV_POS_SUB_BTN
+              : NAV_MODULE_BTN,
         ].join(' ')
       }
     >
@@ -135,9 +155,9 @@ function SideSubItem({
 
 /* ── Etiqueta de sección ────────────────────────────────────────────────────── */
 function NavSection({ label, wide }: { label: string; wide: boolean }) {
-  if (!wide) return <div className="my-2 h-px mx-2" style={{ background: '#E4E8F2' }} />
+  if (!wide) return <div className="mx-2 my-2 h-px bg-[#3b3da1]/25" />
   return (
-    <p className="mb-1 mt-5 px-3 text-[10px] font-bold uppercase tracking-[0.13em] text-gray-500 first:mt-2">
+    <p className="mb-1 mt-5 px-3 text-[10px] font-bold uppercase tracking-[0.13em] text-[#3b3da1]/80 first:mt-2">
       {label}
     </p>
   )
@@ -170,8 +190,8 @@ function SideCollapsible({
         title={label}
         onClick={onCollapsedClick}
         className={[
-          'group flex w-full items-center justify-center rounded-xl py-2.5 transition-all duration-150',
-          isActive ? 'bg-red-50 text-red-700 font-semibold' : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900',
+          'group flex w-full items-center justify-center rounded-full px-1 py-2.5 transition-all duration-150',
+          isActive ? NAV_MODULE_BTN_ACTIVE : NAV_MODULE_BTN,
         ].join(' ')}
       >
         <Icon size={17} strokeWidth={1.75} aria-hidden />
@@ -184,12 +204,12 @@ function SideCollapsible({
         type="button"
         onClick={onToggle}
         className={[
-          'flex w-full items-center gap-3 rounded-xl px-3 py-2.5 transition-all duration-150',
-          isActive ? 'bg-red-50 text-red-700 font-semibold' : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900',
+          'flex w-full items-center gap-3 rounded-full px-4 py-3 transition-all duration-150',
+          isActive ? NAV_MODULE_BTN_ACTIVE : NAV_MODULE_BTN,
         ].join(' ')}
       >
         <Icon size={17} strokeWidth={1.75} className="shrink-0" aria-hidden />
-        <span className="flex-1 truncate text-left text-sm font-medium">{label}</span>
+        <span className="flex-1 truncate text-left text-sm font-semibold">{label}</span>
         <ChevronDown
           size={14}
           className={`shrink-0 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
@@ -197,7 +217,7 @@ function SideCollapsible({
         />
       </button>
       {open ? (
-        <div className="mt-1 space-y-0.5 pl-8 pr-1">
+        <div className="mt-2 space-y-2 pl-0 pr-0">
           {children}
         </div>
       ) : null}
@@ -352,7 +372,7 @@ export function DashboardLayout() {
   const navInventarioActivo = location.pathname.startsWith('/inventario')
   const navEstadisticasActivo = location.pathname.startsWith('/estadisticas')
   const navReportesActivo = location.pathname.startsWith('/reportes')
-  const navPosActivo  = location.pathname.startsWith('/pos')
+  const navPosActivo = location.pathname.startsWith('/pos')
   const navUsuarioActivo = location.pathname.startsWith('/usuario')
 
   const inventarioDefaultTo = useMemo(() => {
@@ -419,7 +439,7 @@ export function DashboardLayout() {
         </div>
 
         {/* ── Scroll nav ───────────────────────────────────────────────────── */}
-        <div className="flex flex-1 flex-col gap-0.5 overflow-y-auto overflow-x-hidden px-2 py-3">
+        <div className="flex flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden px-2 py-3">
 
           {/* — Principal — */}
           <NavSection label="Principal" wide={sidebarWide} />
@@ -447,7 +467,7 @@ export function DashboardLayout() {
             </>
           ) : null}
 
-          {/* — Ventas POS — */}
+          {/* — Ventas POS (desplegable: Punto de Venta → submenú) — */}
           {can('pos') ? (
             <>
               <NavSection label="Ventas" wide={sidebarWide} />
@@ -460,10 +480,10 @@ export function DashboardLayout() {
                 isActive={navPosActivo}
                 onCollapsedClick={() => navigate('/pos/vender')}
               >
-                <SideSubItem to="/pos/vender" Icon={ShoppingCart} label="Vender" exact />
-                <SideSubItem to="/pos/facturas" Icon={Receipt} label="Facturas" />
-                <SideSubItem to="/pos/cotizaciones" Icon={FileText} label="Cotizaciones" />
-                <SideSubItem to="/pos/clientes" Icon={ContactRound} label="Clientes" />
+                <SideSubItem variant="pos" to="/pos/vender" Icon={ShoppingCart} label="Vender" exact />
+                <SideSubItem variant="pos" to="/pos/facturas" Icon={Receipt} label="Facturas" />
+                <SideSubItem variant="pos" to="/pos/cotizaciones" Icon={FileText} label="Cotizaciones" />
+                <SideSubItem variant="pos" to="/pos/clientes" Icon={ContactRound} label="Clientes" />
               </SideCollapsible>
             </>
           ) : null}
@@ -506,7 +526,7 @@ export function DashboardLayout() {
                 isActive={navUsuarioActivo}
                 onCollapsedClick={() => navigate('/usuario/crear')}
               >
-                <SideSubItem to="/usuario/crear" Icon={UserPlus} label="Crear usuario" />
+                <SideSubItem variant="pos" to="/usuario/crear" Icon={UserPlus} label="Crear usuario" />
               </SideCollapsible>
             </>
           ) : null}
@@ -520,9 +540,9 @@ export function DashboardLayout() {
             onClick={logout}
             title="Cerrar sesión"
             className={[
-              'relative z-10 mt-2 flex items-center gap-3 rounded-xl transition-all duration-150',
-              'text-gray-600 hover:bg-red-50 hover:text-red-600',
-              sidebarWide ? 'px-3 py-2.5' : 'justify-center py-2.5',
+              'relative z-10 mt-2 flex w-full items-center gap-3 rounded-full transition-all duration-150',
+              NAV_MODULE_BTN,
+              sidebarWide ? 'px-4 py-3' : 'justify-center px-1 py-2.5',
             ].join(' ')}
           >
             <LogOut size={17} strokeWidth={1.75} className="shrink-0" aria-hidden />
@@ -605,11 +625,11 @@ export function DashboardLayout() {
             <button
               type="button"
               onClick={() => navigate('/pos/vender')}
-              className="flex h-9 items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 text-xs font-bold text-red-700 transition hover:bg-red-100"
+              className="flex h-9 items-center gap-2 rounded-full bg-gradient-to-r from-[#3b3da1] to-[#24255d] px-4 text-xs font-bold text-white shadow-sm transition hover:from-[#4d50c4] hover:to-[#2e3175]"
               aria-label="Abrir POS"
             >
-              <Store size={15} strokeWidth={2} aria-hidden />
-              <span className="hidden sm:inline">POS</span>
+              <Zap size={15} strokeWidth={2} className="shrink-0" aria-hidden />
+              <span className="hidden sm:inline">Abrir POS</span>
             </button>
           ) : null}
 

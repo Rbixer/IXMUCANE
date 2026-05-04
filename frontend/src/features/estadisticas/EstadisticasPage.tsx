@@ -35,6 +35,15 @@ function fmtQShort(n: number) {
   return fmtQ(n)
 }
 
+/** Etiqueta corta mes-día + hora para una venta (ISO). */
+function fmtSaleDateTime(iso: string) {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return { day: '—', clock: '' }
+  const day = new Intl.DateTimeFormat('es-GT', { month: '2-digit', day: '2-digit' }).format(d)
+  const clock = new Intl.DateTimeFormat('es-GT', { hour: '2-digit', minute: '2-digit' }).format(d)
+  return { day, clock }
+}
+
 const PERIODS = [7, 14, 30, 90] as const
 type Period = (typeof PERIODS)[number]
 const PERIOD_LABEL: Record<Period, string> = { 7: '7 días', 14: '14 días', 30: '30 días', 90: '90 días' }
@@ -153,8 +162,19 @@ export function EstadisticasPage() {
       label: row.date ? row.date.slice(5) : '—',
       amount: Number.isFinite(Number(row.amount)) ? Number(row.amount) : 0,
       count: Number.isFinite(row.count) ? row.count : 0,
+      profit: Number.isFinite(Number(row.profit)) ? Number(row.profit) : 0,
     }))
   }, [d?.daily])
+
+  const saleRows = useMemo(() => {
+    return (d?.sales ?? []).map((row) => ({
+      id: row.id,
+      created_at: row.created_at,
+      amount: Number.isFinite(Number(row.total)) ? Number(row.total) : 0,
+      profit: Number.isFinite(Number(row.profit)) ? Number(row.profit) : 0,
+      lines_count: Number.isFinite(row.lines_count) ? row.lines_count : 0,
+    }))
+  }, [d?.sales])
 
   const topDayAmt = useMemo(() => Math.max(...dailyPoints.map((r) => r.amount), 1), [dailyPoints])
 
@@ -310,7 +330,7 @@ export function EstadisticasPage() {
                           <div
                             className={`w-full rounded-t-md transition-all duration-300 ${hasData ? 'bg-gradient-to-t from-brand-700 to-brand-400' : 'bg-app-border'}`}
                             style={{ height: `${pct}%` }}
-                            title={`${row.label}: ${fmtQ(row.amount)} (${row.count} tickets)`}
+                            title={`${row.label}: ${fmtQ(row.amount)} · ${row.count} ventas · ganancia ${fmtQ(row.profit)}`}
                           />
                         </div>
                         <span className="text-[9px] text-app-subtle mt-1">{row.label}</span>
@@ -363,47 +383,90 @@ export function EstadisticasPage() {
             )}
           </div>
 
-          {/* Cards diarias (productividad) */}
+          {/* Detalle venta por venta (mismo criterio de importe / ganancia / detalle) */}
           <div className="xl:col-span-5 rounded-2xl border border-app-border bg-app-surface p-6 shadow-card">
-            <div className="mb-5 flex items-center gap-2">
-              <CalendarDays size={15} strokeWidth={1.75} className="text-app-muted" />
-              <h2 className="text-sm font-bold text-app-text">Productividad diaria</h2>
-              <span className="text-xs text-app-muted">· ticket promedio por día</span>
+            <div className="mb-5 flex flex-wrap items-center gap-x-2 gap-y-1">
+              <CalendarDays size={15} strokeWidth={1.75} className="text-app-muted shrink-0" />
+              <h2 className="text-sm font-bold text-app-text">Ventas del periodo</h2>
+              <span className="text-xs text-app-muted">
+                · N.º de venta (ticket), fecha, importe (Q), ganancia bruta, líneas y promedio por línea
+              </span>
             </div>
+            <p className="mb-4 text-[11px] text-app-subtle">
+              Orden: más recientes arriba. Hasta 1000 ventas en el rango de {PERIOD_LABEL[period]}.
+            </p>
 
             {loading ? (
-              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-7">
-                {Array.from({ length: 7 }).map((_, i) => (
-                  <div key={i} className="h-20 animate-pulse rounded-xl bg-app-bg" />
+              <div className="space-y-2">
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <div key={i} className="h-14 animate-pulse rounded-xl bg-app-bg" />
                 ))}
               </div>
-            ) : dailyPoints.length === 0 ? (
-              <p className="text-sm text-app-muted">Sin datos para el periodo.</p>
+            ) : saleRows.length === 0 ? (
+              <p className="text-sm text-app-muted">Sin ventas en este periodo.</p>
             ) : (
-              <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-7">
-                {dailyPoints.map((row) => {
-                  const avg = row.count > 0 ? row.amount / row.count : 0
-                  const hasData = row.amount > 0
+              <div className="space-y-2 max-h-[min(70vh,42rem)] overflow-y-auto pr-1">
+                {saleRows.map((row) => {
+                  const { day, clock } = fmtSaleDateTime(row.created_at)
+                  const hasData = row.amount > 0 || row.lines_count > 0
+                  const lines = row.lines_count
+                  const avgLine = lines > 0 ? row.amount / lines : 0
+                  const profitPositive = row.profit >= 0
                   return (
                     <div
-                      key={`day-${row.key}`}
-                      className={`rounded-xl border p-3 transition-all ${
+                      key={`sale-${row.id}`}
+                      className={[
+                        'flex min-h-[3.25rem] flex-wrap items-center gap-x-4 gap-y-2 rounded-xl border px-4 py-2.5 transition-all sm:flex-nowrap sm:justify-between',
                         hasData
-                          ? 'border-brand-200/40 bg-gradient-to-b from-brand-50/30 to-transparent'
-                          : 'border-app-border bg-app-bg/30'
-                      }`}
+                          ? 'border-brand-200/50 bg-gradient-to-r from-brand-50/40 via-app-surface to-transparent'
+                          : 'border-app-border bg-app-bg/30',
+                      ].join(' ')}
+                      title={`Ticket #${row.id}`}
                     >
-                      <p className="text-[10px] font-bold uppercase tracking-wider text-app-muted">{row.label}</p>
-                      <p className="mt-1.5 text-sm font-bold text-app-text tabular-nums">
-                        {hasData ? fmtQShort(row.amount) : '—'}
-                      </p>
-                      <div className="mt-1.5 flex items-center justify-between gap-1">
-                        <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold ${hasData ? 'bg-brand-50 text-brand-700' : 'bg-app-bg text-app-muted'}`}>
-                          {row.count} tickets
+                      <div className="flex min-w-0 flex-1 items-center gap-2.5 sm:gap-5">
+                        <div className="flex min-w-[3.25rem] shrink-0 flex-col items-start justify-center">
+                          <span className="text-[9px] font-bold uppercase tracking-wide text-app-muted">N.º venta</span>
+                          <span
+                            className="text-sm font-bold tabular-nums leading-none text-app-text"
+                            title={`Número de ticket / venta: ${row.id}`}
+                          >
+                            {row.id}
+                          </span>
+                        </div>
+                        <div className="flex w-[4.75rem] shrink-0 flex-col gap-0.5">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-app-muted leading-none">
+                            {day}
+                          </span>
+                          {clock ? (
+                            <span className="text-[10px] tabular-nums text-app-subtle leading-none">{clock}</span>
+                          ) : null}
+                        </div>
+                        <p
+                          className="text-lg font-bold tabular-nums leading-none text-app-text sm:text-xl"
+                          title="Total de esta venta"
+                        >
+                          {fmtQShort(row.amount)}
+                        </p>
+                      </div>
+                      <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:justify-end sm:pl-0">
+                        <span
+                          className={`shrink-0 rounded-full px-2.5 py-1 text-[10px] font-semibold ${
+                            profitPositive ? 'bg-emerald-50 text-emerald-800' : 'bg-rose-50 text-rose-800'
+                          }`}
+                          title="Ganancia bruta de esta venta: (precio de venta − costo en catálogo) × unidades por línea"
+                        >
+                          Gan. {fmtQShort(row.profit)}
                         </span>
-                        {avg > 0 ? (
-                          <span className="text-[9px] text-app-subtle tabular-nums">~{fmtQShort(avg)}</span>
-                        ) : null}
+                        {lines > 0 ? (
+                          <span
+                            className="text-[10px] text-app-subtle tabular-nums sm:max-w-[12rem] sm:text-right"
+                            title="Promedio por línea del ticket"
+                          >
+                            {lines} líneas · ~{fmtQShort(avgLine)}
+                          </span>
+                        ) : (
+                          <span className="text-[10px] text-app-subtle tabular-nums">Sin líneas</span>
+                        )}
                       </div>
                     </div>
                   )

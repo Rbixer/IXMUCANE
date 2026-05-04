@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { CheckCircle2, Download, Eye, FileText, Filter, Receipt, Search } from 'lucide-react'
+import { CheckCircle2, Clock3, CreditCard, Download, Eye, FileText, Filter, Receipt, Search, X } from 'lucide-react'
 import { fetchPosSale, listPosSales, patchPosSaleStatus, posSaleFromListItem } from './pos.service'
 import { SaleReceiptModal } from './SaleReceiptModal'
 import { api } from '../../shared/api/client'
@@ -21,6 +21,11 @@ const STATUS_STYLES: Record<string, { bg: string; color: string; border: string 
   credit:  { bg: '#EFF6FF', color: '#1D4ED8', border: '#BFDBFE' },
   pending: { bg: '#FFFBEB', color: '#B45309', border: '#FDE68A' },
 }
+const STATUS_ICONS = {
+  paid: CheckCircle2,
+  credit: CreditCard,
+  pending: Clock3,
+} as const
 
 type StatusFilter = 'all' | PaymentStatus
 
@@ -41,6 +46,8 @@ export function PosFacturasPage() {
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [cobrosDownloading, setCobrosDownloading] = useState(false)
+  const [collectTarget, setCollectTarget] = useState<PosSaleListItem | null>(null)
+  const [abonoInput, setAbonoInput] = useState('')
 
   const salesQuery = useQuery({
     queryKey: ['pos', 'sales', 'facturas', 'all'],
@@ -48,20 +55,44 @@ export function PosFacturasPage() {
   })
 
   const collectMutation = useMutation({
-    mutationFn: ({ id, status }: { id: number; status: PaymentStatus }) =>
-      patchPosSaleStatus(id, { payment_status: status }),
+    mutationFn: ({ id, payment_abono }: { id: number; payment_abono: number }) =>
+      patchPosSaleStatus(id, { payment_abono }),
     onSuccess: () => {
-      notifySuccess('Estado de pago actualizado.')
+      notifySuccess('Abono registrado.')
+      setCollectTarget(null)
+      setAbonoInput('')
       void queryClient.invalidateQueries({ queryKey: ['pos', 'sales'] })
     },
     onError: (e: Error) => notifyError(e.message),
   })
 
+  const openCollectModal = (row: PosSaleListItem) => {
+    setCollectTarget(row)
+    const due =
+      Number(row.balance_due) ||
+      Math.max(0, Number(row.total) - Number(row.amount_paid ?? 0))
+    setAbonoInput(due > 0 ? String(due) : '')
+  }
+
+  const collectPreview = useMemo(() => {
+    if (!collectTarget) return { total: 0, paid: 0, abono: 0, afterPaid: 0, queda: 0 }
+    const total = Number(collectTarget.total) || 0
+    const paid = Number(collectTarget.amount_paid) || 0
+    const raw = abonoInput.trim().replace(',', '.')
+    const abono = parseFloat(raw)
+    const abonoOk = Number.isFinite(abono) && abono >= 0 ? abono : 0
+    const afterPaid = Math.min(total, paid + abonoOk)
+    const queda = Math.max(0, total - afterPaid)
+    return { total, paid, abono: abonoOk, afterPaid, queda }
+  }, [collectTarget, abonoInput])
+
   const allRows = salesQuery.data ?? []
 
   const filteredRows = useMemo(() => {
     let rows = allRows
-    if (statusFilter !== 'all') rows = rows.filter((r) => (r.payment_status ?? 'paid') === statusFilter)
+    if (statusFilter !== 'all') {
+      rows = rows.filter((r) => (r.payment_status ?? 'paid') === statusFilter)
+    }
 
     if (dateFrom) {
       const from = new Date(dateFrom).getTime()
@@ -129,9 +160,111 @@ export function PosFacturasPage() {
     { key: 'pending', label: 'Pendiente', color: '#B45309' },
   ]
 
+  const submitAbono = () => {
+    if (!collectTarget) return
+    const v = parseFloat(abonoInput.trim().replace(',', '.'))
+    if (!Number.isFinite(v) || v <= 0) {
+      notifyError('Indique un abono mayor que cero.')
+      return
+    }
+    collectMutation.mutate({ id: collectTarget.id, payment_abono: v })
+  }
+
   return (
     <div className="mx-auto w-full max-w-[min(100%,72rem)] space-y-4">
       <SaleReceiptModal sale={previewSale} onClose={() => setPreviewSale(null)} variant="preview" showPrintButton />
+
+      {collectTarget ? (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-black/45 p-4 backdrop-blur-[2px]"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="collect-modal-title"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-gray-200 bg-white p-5 shadow-xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 id="collect-modal-title" className="text-base font-bold text-gray-900">
+                  Registrar abono
+                </h2>
+                <p className="mt-0.5 text-xs text-gray-500">Venta #{collectTarget.id}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setCollectTarget(null); setAbonoInput('') }}
+                className="rounded-lg p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
+                aria-label="Cerrar"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3 text-sm">
+              <div className="flex justify-between gap-2 text-gray-600">
+                <span>Total venta</span>
+                <span className="font-bold tabular-nums text-gray-900">{formatQ(collectTarget.total)}</span>
+              </div>
+              <div className="flex justify-between gap-2 text-gray-600">
+                <span>Ya pagado</span>
+                <span className="font-semibold tabular-nums text-gray-800">
+                  {formatQ(collectTarget.amount_paid ?? '0')}
+                </span>
+              </div>
+              <div className="flex justify-between gap-2 border-t border-gray-100 pt-2 text-gray-600">
+                <span>Saldo antes del abono</span>
+                <span className="font-bold tabular-nums text-amber-800">
+                  {formatQ(
+                    collectTarget.balance_due ??
+                      String(Math.max(0, Number(collectTarget.total) - Number(collectTarget.amount_paid ?? 0))),
+                  )}
+                </span>
+              </div>
+
+              <label className="block">
+                <span className="text-xs font-semibold text-gray-700">Abono del cliente (Q)</span>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={abonoInput}
+                  onChange={(e) => setAbonoInput(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-base font-semibold tabular-nums text-gray-900 outline-none ring-emerald-500/30 focus:ring-2"
+                  autoFocus
+                />
+              </label>
+
+              <div className="rounded-xl border border-emerald-100 bg-emerald-50/80 px-3 py-2.5">
+                <p className="text-[11px] font-semibold uppercase tracking-wide text-emerald-800">Quedaría por pagar</p>
+                <p className="mt-1 text-2xl font-black tabular-nums text-emerald-900">
+                  {formatQ(String(collectPreview.queda))}
+                </p>
+                <p className="mt-1 text-[10px] text-emerald-700/90">
+                  Tras este abono: pagado acumulado {formatQ(String(collectPreview.afterPaid))} de{' '}
+                  {formatQ(collectTarget.total)}
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => { setCollectTarget(null); setAbonoInput('') }}
+                className="rounded-xl px-4 py-2 text-sm font-semibold text-gray-600 hover:bg-gray-100"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={collectMutation.isPending}
+                onClick={submitAbono}
+                className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-bold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50"
+              >
+                {collectMutation.isPending ? 'Guardando…' : 'Confirmar abono'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {/* ── Hero header ──────────────────────────────────────────────── */}
       <div
@@ -269,6 +402,7 @@ export function PosFacturasPage() {
                   const pmStyle  = PAYMENT_STYLES[r.payment_method]  ?? PAYMENT_STYLES.other
                   const psStatus = r.payment_status ?? 'paid'
                   const psStyle  = STATUS_STYLES[psStatus] ?? STATUS_STYLES.paid
+                  const StatusIcon = STATUS_ICONS[psStatus as keyof typeof STATUS_ICONS] ?? CheckCircle2
                   const isPending = psStatus !== 'paid'
                   return (
                     <tr
@@ -312,9 +446,10 @@ export function PosFacturasPage() {
                       <td className="px-4 py-3">
                         <div className="flex flex-col gap-1">
                           <span
-                            className="inline-flex w-fit rounded-full px-2.5 py-1 text-[10px] font-black"
+                            className="inline-flex w-fit items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-black"
                             style={{ background: psStyle.bg, color: psStyle.color, border: `1px solid ${psStyle.border}` }}
                           >
+                            <StatusIcon size={12} />
                             {STATUS_LABELS[psStatus] ?? psStatus}
                           </span>
                           {psStatus === 'credit' && r.credit_days > 0 ? (
@@ -337,6 +472,15 @@ export function PosFacturasPage() {
                       {/* Total */}
                       <td className="px-4 py-3">
                         <span className="text-sm font-black tabular-nums text-gray-900">{formatQ(r.total)}</span>
+                        {isPending ? (
+                          <p className="mt-0.5 text-[10px] font-bold text-amber-700">
+                            Pendiente:{' '}
+                            {formatQ(
+                              r.balance_due ??
+                                String(Math.max(0, Number(r.total) - Number(r.amount_paid ?? 0))),
+                            )}
+                          </p>
+                        ) : null}
                       </td>
                       {/* Acciones */}
                       <td className="px-4 py-3">
@@ -367,8 +511,8 @@ export function PosFacturasPage() {
                             <button
                               type="button"
                               disabled={collectMutation.isPending}
-                              onClick={() => collectMutation.mutate({ id: r.id, status: 'paid' })}
-                              title="Marcar como cobrado"
+                              onClick={() => openCollectModal(r)}
+                              title="Registrar abono"
                               className="flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-bold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50"
                             >
                               <CheckCircle2 size={13} />

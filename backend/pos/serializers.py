@@ -14,7 +14,7 @@ from .models import Customer, Quote, QuoteLine, Sale, SaleLine
 class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
-        fields = ['id', 'name', 'phone', 'email', 'address', 'created_at']
+        fields = ['id', 'name', 'nit', 'phone', 'email', 'address', 'created_at']
         read_only_fields = ['id', 'created_at']
 
 
@@ -84,6 +84,7 @@ class SaleLineReadSerializer(serializers.ModelSerializer):
 class SaleReadSerializer(serializers.ModelSerializer):
     lines = SaleLineReadSerializer(many=True, read_only=True)
     branch_name = serializers.CharField(source='branch.name', read_only=True)
+    balance_due = serializers.SerializerMethodField()
 
     class Meta:
         model = Sale
@@ -102,10 +103,17 @@ class SaleReadSerializer(serializers.ModelSerializer):
             'credit_note',
             'discount',
             'total',
+            'amount_paid',
+            'balance_due',
             'created_at',
             'lines',
         ]
         read_only_fields = fields
+
+    def get_balance_due(self, obj: Sale) -> str:
+        total = obj.total or Decimal('0')
+        paid = obj.amount_paid or Decimal('0')
+        return str(max(Decimal('0'), total - paid))
 
 
 class SaleLineWriteSerializer(serializers.Serializer):
@@ -259,7 +267,11 @@ class SaleCreateSerializer(serializers.Serializer):
 
             SaleLine.objects.bulk_create(lines_to_create)
             sale.total = max(Decimal('0'), total - discount)
-            sale.save(update_fields=['total'])
+            if payment_status == Sale.PaymentStatus.PAID:
+                sale.amount_paid = sale.total
+            else:
+                sale.amount_paid = Decimal('0')
+            sale.save(update_fields=['total', 'amount_paid'])
 
         return sale
 
@@ -268,6 +280,7 @@ class SaleListSerializer(serializers.ModelSerializer):
     branch_name = serializers.CharField(source='branch.name', read_only=True)
     lines_count = serializers.SerializerMethodField()
     total_units = serializers.SerializerMethodField()
+    balance_due = serializers.SerializerMethodField()
     lines = SaleLineListRowSerializer(many=True, read_only=True)
 
     class Meta:
@@ -287,11 +300,18 @@ class SaleListSerializer(serializers.ModelSerializer):
             'credit_note',
             'discount',
             'total',
+            'amount_paid',
+            'balance_due',
             'created_at',
             'lines_count',
             'total_units',
             'lines',
         ]
+
+    def get_balance_due(self, obj: Sale) -> str:
+        total = obj.total or Decimal('0')
+        paid = obj.amount_paid or Decimal('0')
+        return str(max(Decimal('0'), total - paid))
 
     def get_lines_count(self, obj: Sale) -> int:
         # Con prefetch_related('lines'), all() usa caché y evita N+1.
