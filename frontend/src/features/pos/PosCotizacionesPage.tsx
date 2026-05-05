@@ -49,6 +49,7 @@ type QuotePreviewRow = {
 
 const QUOTE_HEADER_STORAGE_KEY = 'pos_quote_header_v1'
 const QUOTE_BRANCH_STORAGE_KEY = 'pos_quote_branch_v1'
+type QuoteInventoryOption = { value: string; id: number; label: string; isTienda?: boolean }
 
 function normBranchName(s: string): string {
   return s
@@ -77,42 +78,38 @@ function bodegaSlotFromName(name: string): 1 | 2 | 3 | null {
   return null
 }
 
+function isBodegaBranchName(name: string): boolean {
+  return /\bbodega\b/i.test(name)
+}
+
 /**
  * Opciones de cotización alineadas con Inventario: TIENDA (/productos) + Bodega 1–3.
  * Primero se asignan bodegas por número; el inventario de tienda es un local que no
  * quedó como Bodega 1/2/3 (p. ej. «TIENDA»).
  */
-function resolveCotizacionInventoryOptions(branches: Branch[]): { id: number; label: string }[] {
+function resolveCotizacionInventoryOptions(branches: Branch[]): QuoteInventoryOption[] {
   if (!branches.length) return []
   const active = branches.filter((b) => b.id > 0)
   const used = new Set<number>()
 
-  const bodegas: { id: number; label: string }[] = []
+  const tienda =
+    active.find((b) => !isBodegaBranchName(b.name) && normBranchName(b.name) === 'tienda') ??
+    active.find((b) => !isBodegaBranchName(b.name) && normBranchName(b.name).includes('tienda')) ??
+    active.find((b) => !isBodegaBranchName(b.name)) ??
+    null
+  if (tienda) used.add(tienda.id)
+
+  const bodegas: QuoteInventoryOption[] = []
   for (const num of [1, 2, 3] as const) {
     const b = active.find((br) => !used.has(br.id) && bodegaSlotFromName(br.name) === num)
     if (b) {
       used.add(b.id)
-      bodegas.push({ id: b.id, label: `Bodega ${num}` })
+      bodegas.push({ value: `branch-${b.id}`, id: b.id, label: `Bodega ${num}` })
     }
   }
 
-  const remaining = active.filter((b) => !used.has(b.id))
-  const takeRemaining = (pred: (b: Branch, n: string) => boolean): Branch | undefined => {
-    const hit = remaining.find((br) => pred(br, normBranchName(br.name)))
-    return hit
-  }
-
-  const tienda =
-    takeRemaining((br, n) => n === 'tienda') ??
-    takeRemaining((br, n) => n.includes('inventario') && n.includes('tienda')) ??
-    takeRemaining((br, n) => /\binventario\s+tienda\b/.test(n)) ??
-    takeRemaining((br, n) => n.includes('mostrador') && !n.includes('bodega')) ??
-    takeRemaining((br, n) => /^tienda\b/.test(n)) ??
-    takeRemaining((br, n) => n.includes('tienda') && !n.includes('bodega')) ??
-    (remaining.length === 1 ? remaining[0] : undefined)
-
-  const out: { id: number; label: string }[] = []
-  if (tienda) out.push({ id: tienda.id, label: 'Tienda' })
+  const out: QuoteInventoryOption[] = []
+  if (tienda) out.push({ value: 'tienda', id: tienda.id, label: 'Inventario tienda', isTienda: true })
   out.push(...bodegas)
   return out
 }
@@ -531,6 +528,8 @@ export function PosCotizacionesPage() {
   const [headerConfig, setHeaderConfig] = useState<QuoteHeader>(DEFAULT_QUOTE_HEADER)
   const [headerModalOpen, setHeaderModalOpen] = useState(false)
   const [quoteBranchId, setQuoteBranchId] = useState<number | null>(null)
+  const [quoteInventoryScopeValue, setQuoteInventoryScopeValue] = useState('')
+  const [seenItemsById, setSeenItemsById] = useState<Record<number, InventoryItem>>({})
   const panelButtonBaseClass =
     'inline-flex h-16 w-full items-center justify-center rounded-xl border-2 px-10 text-lg font-semibold shadow-sm sm:w-[20rem]'
 
@@ -560,53 +559,60 @@ export function PosCotizacionesPage() {
     () => resolveCotizacionInventoryOptions(branchesQuery.data ?? []),
     [branchesQuery.data],
   )
+  const tiendaBranchIds = useMemo(() => {
+    const ids = new Set<number>()
+    for (const b of branchesQuery.data ?? []) {
+      if (b.id > 0 && bodegaSlotFromName(b.name) == null) ids.add(b.id)
+    }
+    return ids
+  }, [branchesQuery.data])
 
   useEffect(() => {
     const opts = cotizacionInventoryOptions
-    if (!opts.length) return
-    const allowed = new Set(opts.map((o) => o.id))
-    setQuoteBranchId((prev) => {
-      if (prev != null && allowed.has(prev)) return prev
-      const tiendaOpt = opts.find((o) => o.label === 'Tienda' || o.label === 'Inventario tienda')
-      if (tiendaOpt && allowed.has(tiendaOpt.id)) return tiendaOpt.id
-      try {
-        const raw = window.localStorage.getItem(QUOTE_BRANCH_STORAGE_KEY)
-        const sid = raw ? parseInt(raw, 10) : NaN
-        if (Number.isFinite(sid) && allowed.has(sid)) return sid
-      } catch {
-        /* ignore */
-      }
-      return opts[0].id
-    })
-  }, [cotizacionInventoryOptions])
+    if (!opts.length || quoteInventoryScopeValue) return
+    const byId = new Map(opts.map((o) => [o.id, o]))
+    const tiendaOpt = opts.find((o) => o.isTienda) ?? null
+    let chosen: QuoteInventoryOption | undefined = tiendaOpt ?? opts[0]
+    try {
+      const raw = window.localStorage.getItem(QUOTE_BRANCH_STORAGE_KEY)
+      const sid = raw ? parseInt(raw, 10) : NaN
+      if (Number.isFinite(sid) && byId.has(sid)) chosen = byId.get(sid)
+    } catch {
+      /* ignore */
+    }
+    if (!chosen) return
+    setQuoteInventoryScopeValue(chosen.value)
+    setQuoteBranchId(chosen.id)
+  }, [cotizacionInventoryOptions, quoteInventoryScopeValue])
 
   useEffect(() => {
     if (!branchesQuery.isFetched) return
     if (cotizacionInventoryOptions.length > 0) return
+    setQuoteInventoryScopeValue('')
     setQuoteBranchId(null)
   }, [branchesQuery.isFetched, cotizacionInventoryOptions.length])
 
   const invQuery = useQuery({
-    queryKey: ['inventory', 'cotizaciones', quoteBranchId ?? 'all'],
+    queryKey: ['inventory', 'cotizaciones', quoteInventoryScopeValue || quoteBranchId || 'all'],
     queryFn: () =>
-      quoteBranchId != null ? listInventory({ branch: quoteBranchId }) : listInventory(),
+      quoteInventoryScopeValue === 'tienda'
+        ? listInventory()
+        : quoteBranchId != null
+          ? listInventory({ branch: quoteBranchId })
+          : listInventory(),
     enabled:
       branchesQuery.isFetched &&
       (cotizacionInventoryOptions.length === 0 || quoteBranchId != null),
   })
 
-  const selectQuoteBranch = (id: number) => {
-    if (id === quoteBranchId) return
-    if (lines.length > 0) {
-      const ok = window.confirm(
-        'Al cambiar de inventario se borrarán las líneas agregadas a la cotización. ¿Desea continuar?',
-      )
-      if (!ok) return
-      setLines([])
-    }
-    setQuoteBranchId(id)
+  const selectQuoteBranch = (nextValue: string) => {
+    const next = cotizacionInventoryOptions.find((o) => o.value === nextValue)
+    if (!next) return
+    if (next.value === quoteInventoryScopeValue && next.id === quoteBranchId) return
+    setQuoteInventoryScopeValue(next.value)
+    setQuoteBranchId(next.id)
     try {
-      window.localStorage.setItem(QUOTE_BRANCH_STORAGE_KEY, String(id))
+      window.localStorage.setItem(QUOTE_BRANCH_STORAGE_KEY, String(next.id))
     } catch {
       /* ignore */
     }
@@ -655,8 +661,28 @@ export function PosCotizacionesPage() {
     },
   })
 
-  const items = invQuery.data ?? []
-  const itemById = useMemo(() => new Map(items.map((i) => [i.id, i])), [items])
+  const allItems = invQuery.data ?? []
+  const items = useMemo(
+    () =>
+      quoteInventoryScopeValue === 'tienda'
+        ? allItems.filter((it) => tiendaBranchIds.has(it.branch))
+        : allItems,
+    [allItems, quoteInventoryScopeValue, tiendaBranchIds],
+  )
+  useEffect(() => {
+    if (items.length === 0) return
+    setSeenItemsById((prev) => {
+      const next = { ...prev }
+      for (const it of items) next[it.id] = it
+      return next
+    })
+  }, [items])
+  const itemById = useMemo(() => {
+    const m = new Map<number, InventoryItem>()
+    for (const it of Object.values(seenItemsById)) m.set(it.id, it)
+    for (const it of items) m.set(it.id, it)
+    return m
+  }, [seenItemsById, items])
 
   const subtotal = useMemo(() => {
     let sum = 0
@@ -923,18 +949,18 @@ export function PosCotizacionesPage() {
                     <span className="sr-only">Inventario</span>
                     <select
                       className="w-full rounded-xl border border-slate-300 bg-white px-2.5 py-2 text-sm font-semibold text-slate-900 shadow-sm outline-none ring-[#c40000]/20 focus:ring-2"
-                      value={quoteBranchId ?? ''}
+                      value={quoteInventoryScopeValue}
                       onChange={(e) => {
                         const v = e.target.value
                         if (!v) return
-                        selectQuoteBranch(Number(v))
+                        selectQuoteBranch(v)
                       }}
                     >
                       <option value="" disabled>
                         Elija inventario…
                       </option>
                       {cotizacionInventoryOptions.map((o) => (
-                        <option key={o.id} value={o.id}>
+                        <option key={o.value} value={o.value}>
                           {o.label}
                         </option>
                       ))}

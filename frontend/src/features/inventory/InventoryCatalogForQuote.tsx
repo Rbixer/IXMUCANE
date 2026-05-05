@@ -69,7 +69,7 @@ export function InventoryCatalogForQuote({ items, isLoading, onAdd }: Props) {
           style={{ backgroundImage: 'radial-gradient(circle at 70% 50%, #DC2626 0%, transparent 60%)' }}
         />
         <div className="relative">
-          <h2 className="text-lg font-black tracking-tight">Inventario del origen seleccionado</h2>
+          <h2 className="text-lg font-black tracking-tight">INVENTARIO TIENDA</h2>
           <p className="mt-0.5 text-[13px] font-medium text-white/60">
             Misma vista que en Inventario: precios, stock y jerarquías. Elija filas con «Agregar» para la cotización.
           </p>

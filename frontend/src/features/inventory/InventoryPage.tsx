@@ -584,9 +584,11 @@ export function InventoryPage() {
           <div className="relative flex flex-wrap items-center justify-between gap-3">
             <div>
               <h1 className="text-xl font-black tracking-tight">
-                {branchLockedId != null && lockedBranchName
-                  ? `Inventario — ${lockedBranchName}`
-                  : 'Inventario'}
+                {bodegaSlot == null
+                  ? 'INVENTARIO TIENDA'
+                  : branchLockedId != null && lockedBranchName
+                    ? `Inventario — ${lockedBranchName}`
+                    : 'Inventario'}
               </h1>
               <p className="mt-0.5 text-[13px] text-white/60 font-medium">
                 {bodegaSinConfigurar

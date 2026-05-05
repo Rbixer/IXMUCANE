@@ -84,6 +84,36 @@ function matchesQuery(it: InventoryItem, q: string): boolean {
   )
 }
 
+function normBranchName(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function isBodegaBranchName(name: string): boolean {
+  return /\bbodega\b/i.test(name)
+}
+
+function bodegaSlotFromName(name: string): 1 | 2 | 3 | null {
+  const raw = name.trim().toLowerCase()
+  const strict = raw.match(/^bodega\s*([123])$/i)
+  if (strict) {
+    const x = Number(strict[1])
+    return x === 1 || x === 2 || x === 3 ? (x as 1 | 2 | 3) : null
+  }
+  const n = normBranchName(name)
+  for (const num of [1, 2, 3] as const) {
+    if (new RegExp(`\\bbodega\\s*${num}\\b`).test(n)) return num
+    if (n === `bodega${num}`) return num
+  }
+  return null
+}
+
+type InventoryBranchOption = { value: string; id: number; label: string; isTienda?: boolean }
+
 export function VentasPage() {
   const { confirm } = useConfirm()
   const queryClient = useQueryClient()
@@ -106,6 +136,8 @@ export function VentasPage() {
   const [formError, setFormError] = useState('')
   const [receiptSale, setReceiptSale] = useState<PosSale | null>(null)
   const [productSearch, setProductSearch] = useState('')
+  const [inventoryScopeValue, setInventoryScopeValue] = useState('')
+  const [seenItemsById, setSeenItemsById] = useState<Record<number, InventoryItem>>({})
   const [customerExpanded, setCustomerExpanded] = useState(false)
   const [showSales, setShowSales] = useState(false)
 
@@ -115,15 +147,48 @@ export function VentasPage() {
   /* ── Queries ─────────────────────────────────────────────────────────── */
   const branchesQuery = useQuery({ queryKey: ['branches'], queryFn: listBranches })
 
+  const inventoryBranchOptions = useMemo<InventoryBranchOption[]>(() => {
+    const branches = branchesQuery.data ?? []
+    const valid = branches.filter((b) => b.id > 0)
+    if (!valid.length) return []
+
+    const tienda =
+      valid.find((b) => !isBodegaBranchName(b.name) && normBranchName(b.name) === 'tienda') ??
+      valid.find((b) => !isBodegaBranchName(b.name) && normBranchName(b.name).includes('tienda')) ??
+      valid.find((b) => !isBodegaBranchName(b.name)) ??
+      null
+
+    const bodegas: Array<{ id: number; label: string }> = []
+    for (const num of [1, 2, 3] as const) {
+      const b = valid.find((x) => bodegaSlotFromName(x.name) === num)
+      if (b) bodegas.push({ id: b.id, label: `Bodega ${num}` })
+    }
+
+    const out: InventoryBranchOption[] = []
+    if (tienda) out.push({ value: 'tienda', id: tienda.id, label: 'Inventario tienda', isTienda: true })
+    out.push(...bodegas.map((b) => ({ ...b, value: `branch-${b.id}` })))
+
+    // Fallback mínimo si la detección no encontró nada con el nombre esperado.
+    if (!out.length) {
+      const id = pickPrimaryInventoryBranchId(valid)
+      if (id != null && id > 0) out.push({ value: `branch-${id}`, id, label: 'Inventario' })
+    }
+
+    return out
+  }, [branchesQuery.data])
+
   useEffect(() => {
-    if (branchId !== 0) return
-    const id = pickPrimaryInventoryBranchId(branchesQuery.data ?? [])
-    if (id != null && id > 0) setBranchId(id)
-  }, [branchesQuery.data, branchId])
+    if (inventoryScopeValue) return
+    const tiendaOpt = inventoryBranchOptions.find((o) => o.isTienda)
+    const fallback = tiendaOpt ?? inventoryBranchOptions[0]
+    if (!fallback) return
+    setInventoryScopeValue(fallback.value)
+    if (fallback.id > 0) setBranchId(fallback.id)
+  }, [inventoryBranchOptions, inventoryScopeValue])
 
   const invQuery = useQuery({
-    queryKey: ['inventory', 'ventas', 'all'],
-    queryFn: () => listInventory(),
+    queryKey: ['inventory', 'ventas', inventoryScopeValue || branchId],
+    queryFn: () => (inventoryScopeValue === 'tienda' ? listInventory() : branchId > 0 ? listInventory({ branch: branchId }) : listInventory()),
   })
   const salesQuery = useQuery({
     queryKey: ['pos', 'sales', branchId],
@@ -149,8 +214,32 @@ export function VentasPage() {
   }, [customerDropOpen])
 
   /* ── Cálculos ────────────────────────────────────────────────────────── */
-  const items = invQuery.data ?? []
-  const itemById = useMemo(() => new Map(items.map((i) => [i.id, i])), [items])
+  const tiendaBranchIds = useMemo(() => {
+    const ids = new Set<number>()
+    for (const b of branchesQuery.data ?? []) {
+      if (b.id > 0 && !isBodegaBranchName(b.name)) ids.add(b.id)
+    }
+    return ids
+  }, [branchesQuery.data])
+  const allItems = invQuery.data ?? []
+  const items = useMemo(
+    () => (inventoryScopeValue === 'tienda' ? allItems.filter((it) => tiendaBranchIds.has(it.branch)) : allItems),
+    [allItems, inventoryScopeValue, tiendaBranchIds],
+  )
+  useEffect(() => {
+    if (items.length === 0) return
+    setSeenItemsById((prev) => {
+      const next = { ...prev }
+      for (const it of items) next[it.id] = it
+      return next
+    })
+  }, [items])
+  const itemById = useMemo(() => {
+    const m = new Map<number, InventoryItem>()
+    for (const it of Object.values(seenItemsById)) m.set(it.id, it)
+    for (const it of items) m.set(it.id, it)
+    return m
+  }, [seenItemsById, items])
 
   const filteredProducts = useMemo(() => {
     return items.filter((it) => matchesQuery(it, productSearch))
@@ -215,6 +304,16 @@ export function VentasPage() {
   })
 
   /* ── Handlers ────────────────────────────────────────────────────────── */
+  const selectInventoryBranch = (nextValue: string) => {
+    if (soloLecturaPos) return
+    const next = inventoryBranchOptions.find((o) => o.value === nextValue)
+    if (!next || next.id <= 0) return
+    if (next.value === inventoryScopeValue && next.id === branchId) return
+    setProductSearch('')
+    setInventoryScopeValue(next.value)
+    setBranchId(next.id)
+  }
+
   const addProduct = (item: InventoryItem, qty = 1, kind: UnitKind = 'unit') => {
     const maxQ = maxQtyForKind(item, kind)
     if (maxQ <= 0) return
@@ -351,6 +450,24 @@ export function VentasPage() {
                 onChange={(e) => setProductSearch(e.target.value)}
                 className="flex-1 bg-transparent text-sm text-app-text placeholder:text-app-subtle outline-none"
               />
+              {inventoryBranchOptions.length > 0 ? (
+                <select
+                  value={inventoryScopeValue}
+                  disabled={invQuery.isLoading || soloLecturaPos}
+                  onChange={(e) => void selectInventoryBranch(e.target.value)}
+                  className="h-9 shrink-0 rounded-lg border border-app-border bg-app-bg px-2 text-sm font-semibold text-app-text outline-none disabled:cursor-not-allowed disabled:opacity-60"
+                  aria-label="Seleccionar inventario"
+                >
+                  <option value="" disabled>
+                    Inventario
+                  </option>
+                  {inventoryBranchOptions.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
               {productSearch ? (
                 <button
                   type="button"
