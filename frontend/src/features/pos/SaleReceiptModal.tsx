@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useState } from 'react'
-import { FileText, Printer, X } from 'lucide-react'
+import { Download, FileText, Printer, Receipt, ShieldCheck, Truck, X } from 'lucide-react'
 import { api } from '../../shared/api/client'
-import { saleFacturaPdfUrl } from '../reportes/reportes.service'
+import { saleFacturaPdfUrl, saleFacturaTicketPdfUrl } from '../reportes/reportes.service'
 import type { PosSale } from './pos.service'
+import {
+  certificarVentaFel,
+  descargarXmlCertificado,
+  descargarXmlEnviado,
+  getFelDocumentoBySale,
+  type FelDocumento,
+} from '../fel/fel.service'
+import { notifyError, notifySuccess } from '../../shared/lib/notify'
 
 const PAYMENT_LABELS: Record<'cash' | 'card' | 'other', string> = {
   cash: 'Efectivo',
@@ -38,7 +46,11 @@ export function SaleReceiptModal({
   variant = 'post-sale',
   showPrintButton = false,
 }: Props) {
-  const [downloading, setDownloading] = useState(false)
+  const [downloading, setDownloading] = useState<'factura' | 'ticket' | null>(null)
+  const [felDoc, setFelDoc] = useState<FelDocumento | null>(null)
+  const [felLoading, setFelLoading] = useState(false)
+  const [felCertifying, setFelCertifying] = useState(false)
+  const [felXmlDownloading, setFelXmlDownloading] = useState<'certificado' | 'enviado' | null>(null)
 
   const handlePrint = useCallback(() => {
     document.body.classList.add('printing-pos-receipt')
@@ -54,25 +66,83 @@ export function SaleReceiptModal({
     }
   }, [])
 
+  useEffect(() => {
+    if (!sale) return
+    let cancelled = false
+    setFelLoading(true)
+    getFelDocumentoBySale(sale.id)
+      .then((doc) => {
+        if (!cancelled) setFelDoc(doc)
+      })
+      .catch(() => {
+        if (!cancelled) setFelDoc(null)
+      })
+      .finally(() => {
+        if (!cancelled) setFelLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [sale?.id])
+
+  const handleDownloadFelXml = async (kind: 'certificado' | 'enviado') => {
+    if (!sale) return
+    setFelXmlDownloading(kind)
+    try {
+      if (kind === 'certificado') await descargarXmlCertificado(sale.id)
+      else await descargarXmlEnviado(sale.id)
+    } catch (err) {
+      notifyError(err instanceof Error ? err.message : 'No se pudo descargar el XML.')
+    } finally {
+      setFelXmlDownloading(null)
+    }
+  }
+
+  const handleCertificar = async () => {
+    if (!sale) return
+    setFelCertifying(true)
+    try {
+      const doc = await certificarVentaFel(sale.id)
+      setFelDoc(doc)
+      if (doc.estado === 'certificado') {
+        notifySuccess(`Factura certificada (Serie ${doc.serie} · No. ${doc.numero_autorizacion}).`)
+      } else if (doc.estado === 'rechazado') {
+        notifyError(`SAT/Corpo rechazó el documento: ${doc.error_mensaje || 'sin detalle'}`)
+      } else {
+        notifyError(doc.error_mensaje || 'No se pudo certificar la factura. Reintente.')
+      }
+    } catch (err) {
+      notifyError(err instanceof Error ? err.message : 'Error al certificar la factura.')
+    } finally {
+      setFelCertifying(false)
+    }
+  }
+
   if (!sale) return null
 
-  const downloadPdf = async () => {
-    setDownloading(true)
+  const downloadPdfVariant = async (variant: 'factura' | 'ticket') => {
+    setDownloading(variant)
     try {
-      const path = saleFacturaPdfUrl(sale.id)
+      const path = variant === 'ticket'
+        ? saleFacturaTicketPdfUrl(sale.id)
+        : saleFacturaPdfUrl(sale.id)
       const { data } = await api.get(path, { responseType: 'blob' })
       const blob = data instanceof Blob ? data : new Blob([data], { type: 'application/pdf' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `factura_ticket_${sale.id}.pdf`
+      a.download = variant === 'ticket'
+        ? `ticket_${sale.id}.pdf`
+        : `factura_${sale.id}.pdf`
       a.rel = 'noopener'
       document.body.appendChild(a)
       a.click()
       a.remove()
       URL.revokeObjectURL(url)
+    } catch (err) {
+      notifyError(err instanceof Error ? err.message : 'No se pudo descargar el PDF.')
     } finally {
-      setDownloading(false)
+      setDownloading(null)
     }
   }
 
@@ -107,10 +177,24 @@ export function SaleReceiptModal({
                 <Printer size={13} /> Imprimir
               </button>
             ) : null}
-            <button type="button" onClick={() => void downloadPdf()} disabled={downloading}
+            <button
+              type="button"
+              onClick={() => void downloadPdfVariant('factura')}
+              disabled={downloading !== null}
+              title="Factura tamaño carta con datos FEL"
               className="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-xs font-bold text-white disabled:opacity-50"
-              style={{ background: '#1a1a2e' }}>
-              <FileText size={13} /> {downloading ? '…' : 'PDF'}
+              style={{ background: '#1a1a2e' }}
+            >
+              <FileText size={13} /> {downloading === 'factura' ? '…' : 'Factura PDF'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void downloadPdfVariant('ticket')}
+              disabled={downloading !== null}
+              title="Ticket de 80mm para impresora térmica"
+              className="flex items-center gap-1.5 rounded-xl border border-gray-200 bg-white px-3 py-1.5 text-xs font-bold text-gray-800 hover:bg-gray-50 disabled:opacity-50"
+            >
+              <Receipt size={13} /> {downloading === 'ticket' ? '…' : 'Ticket PDF'}
             </button>
             <button type="button" onClick={onClose}
               className="flex h-8 w-8 items-center justify-center rounded-xl border border-gray-200 text-gray-400 hover:bg-gray-50">
@@ -176,6 +260,131 @@ export function SaleReceiptModal({
                   ) : null}
                 </div>
               </div>
+            ) : null}
+
+            {/* Envío */}
+            {sale.is_envio ? (
+              <div
+                className="mt-3 flex items-start gap-3 rounded-xl border px-4 py-3 print:hidden"
+                style={{ background: '#FFFBEB', borderColor: '#FDE68A' }}
+              >
+                <Truck size={18} style={{ color: '#92400E' }} />
+                <div className="flex-1">
+                  <p className="text-[10px] font-bold uppercase tracking-wider" style={{ color: '#92400E' }}>
+                    Procesada como envío
+                  </p>
+                  <p className="mt-0.5 text-[11px] text-amber-800">
+                    Esta venta se registró como envío. Genera recibo / ticket.
+                  </p>
+                </div>
+              </div>
+            ) : null}
+
+            {/* Estado FEL */}
+            {!sale.is_envio ? (
+            <div
+              className="mt-3 flex items-start gap-3 rounded-xl border px-4 py-3 print:hidden"
+              style={
+                felDoc?.estado === 'certificado'
+                  ? { background: '#F0FDF4', borderColor: '#BBF7D0' }
+                  : felDoc?.estado === 'rechazado' || felDoc?.estado === 'error'
+                    ? { background: '#FEF2F2', borderColor: '#FECACA' }
+                    : { background: '#F8FAFC', borderColor: '#E2E8F0' }
+              }
+            >
+              <ShieldCheck
+                size={18}
+                style={{
+                  color:
+                    felDoc?.estado === 'certificado'
+                      ? '#15803D'
+                      : felDoc?.estado === 'rechazado' || felDoc?.estado === 'error'
+                        ? '#B91C1C'
+                        : '#475569',
+                }}
+              />
+              <div className="flex-1">
+                <p
+                  className="text-[10px] font-bold uppercase tracking-wider"
+                  style={{
+                    color:
+                      felDoc?.estado === 'certificado'
+                        ? '#15803D'
+                        : felDoc?.estado === 'rechazado' || felDoc?.estado === 'error'
+                          ? '#B91C1C'
+                          : '#475569',
+                  }}
+                >
+                  Factura electrónica (FEL · {felDoc?.ambiente ?? 'pruebas'})
+                </p>
+                {felLoading ? (
+                  <p className="mt-0.5 text-[11px] text-gray-500">Consultando estado…</p>
+                ) : felDoc?.estado === 'certificado' ? (
+                  <div className="mt-0.5 text-[11px] text-gray-700">
+                    <p>
+                      <span className="font-semibold">Serie:</span> {felDoc.serie || '—'}{' '}
+                      <span className="ml-2 font-semibold">No. autorización:</span>{' '}
+                      <span className="font-mono">{felDoc.numero_autorizacion || '—'}</span>
+                    </p>
+                    {felDoc.fecha_certificacion ? (
+                      <p className="text-gray-500">
+                        Certificada el{' '}
+                        {new Date(felDoc.fecha_certificacion).toLocaleString('es-GT', {
+                          dateStyle: 'medium',
+                          timeStyle: 'short',
+                        })}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : felDoc ? (
+                  <p className="mt-0.5 text-[11px] text-gray-600">
+                    {felDoc.estado === 'rechazado' || felDoc.estado === 'error'
+                      ? felDoc.error_mensaje || 'No se certificó. Reintente.'
+                      : 'Pendiente de certificación.'}
+                  </p>
+                ) : (
+                  <p className="mt-0.5 text-[11px] text-gray-500">
+                    Aún no se ha enviado a certificar.
+                  </p>
+                )}
+              </div>
+              <div className="flex shrink-0 flex-col items-end gap-1.5">
+                {felDoc?.estado !== 'certificado' ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleCertificar()}
+                    disabled={felCertifying || felLoading}
+                    className="rounded-xl px-3 py-1.5 text-[11px] font-bold text-white disabled:opacity-50"
+                    style={{ background: '#15803D' }}
+                  >
+                    {felCertifying ? 'Enviando…' : 'Certificar FEL'}
+                  </button>
+                ) : null}
+                {felDoc?.estado === 'certificado' ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleDownloadFelXml('certificado')}
+                    disabled={felXmlDownloading !== null}
+                    className="flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-white px-3 py-1.5 text-[11px] font-bold text-emerald-700 transition hover:bg-emerald-50 disabled:opacity-50"
+                  >
+                    <Download size={12} />
+                    {felXmlDownloading === 'certificado' ? 'Descargando…' : 'XML SAT'}
+                  </button>
+                ) : null}
+                {felDoc && (felDoc.estado === 'rechazado' || felDoc.estado === 'error') ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleDownloadFelXml('enviado')}
+                    disabled={felXmlDownloading !== null}
+                    className="flex items-center gap-1.5 rounded-xl border border-red-200 bg-white px-3 py-1.5 text-[11px] font-bold text-red-700 transition hover:bg-red-50 disabled:opacity-50"
+                    title="Descargar el XML enviado a Corpo (depuración)"
+                  >
+                    <Download size={12} />
+                    {felXmlDownloading === 'enviado' ? 'Descargando…' : 'XML enviado'}
+                  </button>
+                ) : null}
+              </div>
+            </div>
             ) : null}
 
             {/* Tabla de productos */}

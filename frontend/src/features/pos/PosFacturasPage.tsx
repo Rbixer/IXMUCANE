@@ -2,9 +2,10 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { CheckCircle2, Clock3, CreditCard, Download, Eye, FileText, Filter, Receipt, Search, X } from 'lucide-react'
 import { fetchPosSale, listPosSales, patchPosSaleStatus, posSaleFromListItem } from './pos.service'
+import { descargarFelXmlsZip, descargarXmlCertificado } from '../fel/fel.service'
 import { SaleReceiptModal } from './SaleReceiptModal'
 import { api } from '../../shared/api/client'
-import { downloadCobrosReport, saleFacturaPdfUrl } from '../reportes/reportes.service'
+import { downloadCobrosReport, saleFacturaPdfUrl, saleFacturaTicketPdfUrl } from '../reportes/reportes.service'
 import { notifyError, notifySuccess } from '../../shared/lib/notify'
 import type { PaymentStatus, PosSale, PosSaleListItem } from './pos.service'
 
@@ -28,6 +29,18 @@ const STATUS_ICONS = {
 } as const
 
 type StatusFilter = 'all' | PaymentStatus
+type FelFilter = 'all' | 'certificado' | 'pendiente' | 'rechazado' | 'error' | 'sin'
+
+const FEL_BADGE: Record<
+  'certificado' | 'pendiente' | 'rechazado' | 'error' | 'sin',
+  { label: string; bg: string; color: string; border: string }
+> = {
+  certificado: { label: 'Certificada',  bg: '#ECFDF5', color: '#047857', border: '#A7F3D0' },
+  pendiente:   { label: 'Pendiente',    bg: '#FFFBEB', color: '#B45309', border: '#FDE68A' },
+  rechazado:   { label: 'Rechazada',    bg: '#FEF2F2', color: '#B91C1C', border: '#FECACA' },
+  error:       { label: 'Error',        bg: '#FEF2F2', color: '#B91C1C', border: '#FECACA' },
+  sin:         { label: 'Sin emitir',   bg: '#F3F4F6', color: '#4B5563', border: '#E5E7EB' },
+}
 
 function formatQ(s: string) {
   const n = Number(s)
@@ -39,10 +52,14 @@ function formatQ(s: string) {
 export function PosFacturasPage() {
   const queryClient = useQueryClient()
   const [downloadingId, setDownloadingId] = useState<number | null>(null)
+  const [downloadingTicketId, setDownloadingTicketId] = useState<number | null>(null)
+  const [downloadingFelId, setDownloadingFelId] = useState<number | null>(null)
+  const [downloadingFelZip, setDownloadingFelZip] = useState(false)
   const [previewSale, setPreviewSale] = useState<PosSale | null>(null)
   const [previewLoadingId, setPreviewLoadingId] = useState<number | null>(null)
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  const [felFilter, setFelFilter] = useState<FelFilter>('all')
   const [dateFrom, setDateFrom] = useState('')
   const [dateTo, setDateTo] = useState('')
   const [cobrosDownloading, setCobrosDownloading] = useState(false)
@@ -93,6 +110,13 @@ export function PosFacturasPage() {
     if (statusFilter !== 'all') {
       rows = rows.filter((r) => (r.payment_status ?? 'paid') === statusFilter)
     }
+    if (felFilter !== 'all') {
+      rows = rows.filter((r) => {
+        const e = r.fel?.estado
+        if (felFilter === 'sin') return !e
+        return e === felFilter
+      })
+    }
 
     if (dateFrom) {
       const from = new Date(dateFrom).getTime()
@@ -114,7 +138,12 @@ export function PosFacturasPage() {
       )
     }
     return rows
-  }, [allRows, statusFilter, dateFrom, dateTo, search])
+  }, [allRows, statusFilter, felFilter, dateFrom, dateTo, search])
+
+  const felCount = useMemo(
+    () => allRows.filter((r) => r.fel?.estado === 'certificado').length,
+    [allRows],
+  )
 
   const totalFacturado = useMemo(() => allRows.reduce((s, r) => s + (Number(r.total) || 0), 0), [allRows])
   const last7 = useMemo(() => {
@@ -124,17 +153,51 @@ export function PosFacturasPage() {
   const pendingRows = useMemo(() => allRows.filter((r) => (r.payment_status ?? 'paid') !== 'paid'), [allRows])
   const pendingTotal = useMemo(() => pendingRows.reduce((s, r) => s + (Number(r.total) || 0), 0), [pendingRows])
 
-  const downloadPdf = async (saleId: number) => {
-    setDownloadingId(saleId)
+  const downloadFelXml = async (saleId: number) => {
+    setDownloadingFelId(saleId)
     try {
-      const path = saleFacturaPdfUrl(saleId)
+      await descargarXmlCertificado(saleId)
+      notifySuccess('XML certificado descargado.')
+    } catch (e) {
+      notifyError(e instanceof Error ? e.message : 'No se pudo descargar el XML.')
+    } finally {
+      setDownloadingFelId(null)
+    }
+  }
+
+  const handleDownloadFelZip = async () => {
+    setDownloadingFelZip(true)
+    try {
+      await descargarFelXmlsZip({ from: dateFrom || undefined, to: dateTo || undefined })
+      notifySuccess('ZIP de XMLs certificados descargado.')
+    } catch (e) {
+      notifyError(e instanceof Error ? e.message : 'No se pudo descargar el ZIP.')
+    } finally {
+      setDownloadingFelZip(false)
+    }
+  }
+
+  const downloadPdfVariant = async (saleId: number, variant: 'factura' | 'ticket') => {
+    if (variant === 'ticket') setDownloadingTicketId(saleId)
+    else setDownloadingId(saleId)
+    try {
+      const path = variant === 'ticket'
+        ? saleFacturaTicketPdfUrl(saleId)
+        : saleFacturaPdfUrl(saleId)
       const { data } = await api.get(path, { responseType: 'blob' })
       const blob = data instanceof Blob ? data : new Blob([data], { type: 'application/pdf' })
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
-      a.href = url; a.download = `factura_ticket_${saleId}.pdf`; a.rel = 'noopener'
+      a.href = url
+      a.download = variant === 'ticket' ? `ticket_${saleId}.pdf` : `factura_${saleId}.pdf`
+      a.rel = 'noopener'
       document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
-    } finally { setDownloadingId(null) }
+    } catch (e) {
+      notifyError(e instanceof Error ? e.message : 'No se pudo descargar el PDF.')
+    } finally {
+      if (variant === 'ticket') setDownloadingTicketId(null)
+      else setDownloadingId(null)
+    }
   }
 
   const openReceiptPreview = async (row: PosSaleListItem) => {
@@ -280,23 +343,42 @@ export function PosFacturasPage() {
               Tickets · Recibos · Descarga PDF individual
             </p>
           </div>
-          {pendingRows.length > 0 ? (
-            <button
-              type="button"
-              onClick={() => void handleDownloadCobros()}
-              disabled={cobrosDownloading}
-              className="flex items-center gap-2 rounded-xl border border-amber-400/40 bg-amber-400/20 px-4 py-2 text-xs font-bold text-amber-200 transition hover:bg-amber-400/30 disabled:opacity-60"
-            >
-              <Download size={14} />
-              {cobrosDownloading ? 'Descargando…' : 'PDF Cuentas por cobrar'}
-            </button>
-          ) : null}
+          <div className="flex flex-wrap items-center gap-2">
+            {felCount > 0 ? (
+              <button
+                type="button"
+                onClick={() => void handleDownloadFelZip()}
+                disabled={downloadingFelZip}
+                className="flex items-center gap-2 rounded-xl border border-emerald-400/40 bg-emerald-400/20 px-4 py-2 text-xs font-bold text-emerald-100 transition hover:bg-emerald-400/30 disabled:opacity-60"
+                title={
+                  dateFrom || dateTo
+                    ? `ZIP de XMLs certificados ${dateFrom || '…'} → ${dateTo || '…'}`
+                    : 'ZIP de todos los XMLs certificados'
+                }
+              >
+                <Download size={14} />
+                {downloadingFelZip ? 'Descargando…' : 'ZIP XMLs FEL'}
+              </button>
+            ) : null}
+            {pendingRows.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => void handleDownloadCobros()}
+                disabled={cobrosDownloading}
+                className="flex items-center gap-2 rounded-xl border border-amber-400/40 bg-amber-400/20 px-4 py-2 text-xs font-bold text-amber-200 transition hover:bg-amber-400/30 disabled:opacity-60"
+              >
+                <Download size={14} />
+                {cobrosDownloading ? 'Descargando…' : 'PDF Cuentas por cobrar'}
+              </button>
+            ) : null}
+          </div>
         </div>
-        <div className="relative mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="relative mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5">
           {[
             { label: 'Total tickets',    value: allRows.length, fmt: 'n' },
             { label: 'Facturado total',  value: totalFacturado, fmt: 'q' },
             { label: 'Últimos 7 días',   value: last7.length,   fmt: 'n' },
+            { label: 'FEL certificadas', value: felCount,       fmt: 'n' },
             { label: 'Por cobrar',       value: pendingTotal,   fmt: 'q', accent: pendingTotal > 0 },
           ].map(({ label, value, fmt, accent }) => (
             <div key={label} className={`rounded-xl px-4 py-3 backdrop-blur-sm ${accent ? 'bg-amber-400/25 border border-amber-400/30' : 'bg-white/10'}`}>
@@ -352,6 +434,30 @@ export function PosFacturasPage() {
                 </button>
               ))}
             </div>
+            <span className="ml-2 text-[10px] font-bold uppercase tracking-wider text-gray-400">FEL</span>
+            <div className="flex gap-1.5">
+              {([
+                { key: 'all',         label: 'Todas' },
+                { key: 'certificado', label: 'Certificadas' },
+                { key: 'pendiente',   label: 'Pendientes' },
+                { key: 'rechazado',   label: 'Rechazadas' },
+                { key: 'sin',         label: 'Sin FEL' },
+              ] as { key: FelFilter; label: string }[]).map(({ key, label }) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setFelFilter(key)}
+                  className={[
+                    'rounded-full px-3 py-1 text-[11px] font-bold transition',
+                    felFilter === key
+                      ? 'bg-gray-800 text-white'
+                      : 'border border-gray-200 bg-gray-50 text-gray-600 hover:border-gray-300 hover:bg-gray-100',
+                  ].join(' ')}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <div className="ml-auto flex items-center gap-2">
               <input
                 type="date"
@@ -390,7 +496,7 @@ export function PosFacturasPage() {
             <table className="min-w-full divide-y divide-gray-50">
               <thead>
                 <tr style={{ background: '#1a1a2e' }}>
-                  {['Ticket', 'Fecha', 'Cliente', 'Pago', 'Estado', 'Productos', 'Total', 'Acciones'].map((h) => (
+                  {['Ticket', 'Fecha', 'Cliente', 'Pago', 'Estado', 'Productos', 'Total', 'FEL', 'Acciones'].map((h) => (
                     <th key={h} className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-wider text-white/70">
                       {h}
                     </th>
@@ -482,6 +588,56 @@ export function PosFacturasPage() {
                           </p>
                         ) : null}
                       </td>
+                      {/* FEL */}
+                      <td className="px-4 py-3">
+                        {(() => {
+                          if (r.is_envio) {
+                            return (
+                              <span
+                                className="inline-flex w-fit items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-black"
+                                style={{ background: '#FEF3C7', color: '#92400E', border: '1px solid #FDE68A' }}
+                                title="Esta venta se procesó como envío y no se certificó FEL."
+                              >
+                                Envío
+                              </span>
+                            )
+                          }
+                          const e = (r.fel?.estado ?? 'sin') as keyof typeof FEL_BADGE
+                          const f = FEL_BADGE[e]
+                          const isCertified = r.fel?.estado === 'certificado'
+                          return (
+                            <div className="flex flex-col gap-0.5">
+                              <div className="flex items-center gap-1.5">
+                                <span
+                                  className="inline-flex w-fit items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-black"
+                                  style={{ background: f.bg, color: f.color, border: `1px solid ${f.border}` }}
+                                >
+                                  {f.label}
+                                </span>
+                                {isCertified ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => void downloadFelXml(r.id)}
+                                    disabled={downloadingFelId === r.id}
+                                    title="Descargar XML certificado por SAT"
+                                    className="flex items-center justify-center rounded-md border border-emerald-200 bg-white p-1 text-emerald-700 transition hover:bg-emerald-50 disabled:opacity-50"
+                                  >
+                                    <Download size={11} />
+                                  </button>
+                                ) : null}
+                              </div>
+                              {isCertified && r.fel?.serie && r.fel?.numero_autorizacion ? (
+                                <span
+                                  className="font-mono text-[10px] text-gray-500"
+                                  title={`Autorización: ${r.fel.numero_autorizacion}`}
+                                >
+                                  {r.fel.serie}-{r.fel.numero_autorizacion.slice(0, 8)}…
+                                </span>
+                              ) : null}
+                            </div>
+                          )
+                        })()}
+                      </td>
                       {/* Acciones */}
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap items-center gap-1.5">
@@ -498,13 +654,23 @@ export function PosFacturasPage() {
                           <button
                             type="button"
                             disabled={downloadingId === r.id}
-                            onClick={() => void downloadPdf(r.id)}
-                            title="Descargar PDF"
+                            onClick={() => void downloadPdfVariant(r.id, 'factura')}
+                            title="Factura PDF (carta) con datos FEL"
                             className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[11px] font-bold text-white transition disabled:opacity-50"
                             style={{ background: '#DC2626' }}
                           >
                             <FileText size={13} />
-                            {downloadingId === r.id ? '…' : 'PDF'}
+                            {downloadingId === r.id ? '…' : 'Factura'}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={downloadingTicketId === r.id}
+                            onClick={() => void downloadPdfVariant(r.id, 'ticket')}
+                            title="Ticket PDF 80mm (térmico) con datos FEL"
+                            className="flex items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-2.5 py-1.5 text-[11px] font-bold text-gray-800 transition hover:bg-gray-50 disabled:opacity-50"
+                          >
+                            <Receipt size={13} />
+                            {downloadingTicketId === r.id ? '…' : 'Ticket'}
                           </button>
                           {/* Botón Cobrar solo para crédito/pendiente */}
                           {isPending ? (

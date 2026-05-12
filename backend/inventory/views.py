@@ -66,10 +66,17 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
                 self._registrar_stock(item, abs(delta), 'OUT')
 
     def perform_destroy(self, instance: InventoryItem) -> None:
+        """Borrado lógico: marca `is_active=False` y deja intacto el histórico.
+
+        Si el cliente envía `?hard=1`, se intenta el borrado físico (con la
+        regla anterior: limpiar líneas referenciadas y respetar `PROTECT`).
         """
-        Quita líneas de venta y de órdenes de compra que referencian el ítem (PROTECT impedía borrarlo).
-        Recalcula totales de ventas; borra ventas u órdenes que queden sin líneas.
-        """
+        if str(self.request.query_params.get('hard', '')).lower() not in ('1', 'true'):
+            if instance.is_active:
+                instance.is_active = False
+                instance.save(update_fields=['is_active'])
+            return
+
         with transaction.atomic():
             sale_ids = list(
                 SaleLine.objects.filter(inventory_item=instance).values_list('sale_id', flat=True).distinct()
@@ -113,6 +120,9 @@ class InventoryItemViewSet(viewsets.ModelViewSet):
         line = self.request.query_params.get('line')
         branch = self.request.query_params.get('branch')
         category = self.request.query_params.get('category')
+        include_inactive = str(self.request.query_params.get('include_inactive', '')).lower() in ('1', 'true')
+        if not include_inactive:
+            qs = qs.filter(is_active=True)
         if line:
             qs = qs.filter(line=line)
         if branch:
@@ -224,3 +234,85 @@ def inventory_transfer_by_branch(request):
 
     updated = InventoryItem.objects.filter(branch_id=from_id).update(branch_id=to_id)
     return Response({'moved': updated, 'from_branch_id': from_id, 'to_branch_id': to_id})
+
+
+# ─── Códigos de barras / etiquetas ────────────────────────────────────────
+
+
+def _parse_int(raw, default: int, lo: int, hi: int) -> int:
+    try:
+        n = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, n))
+
+
+def _get_item_or_404(pk: int) -> InventoryItem | None:
+    return (
+        InventoryItem.objects.select_related('branch', 'category')
+        .filter(pk=pk)
+        .first()
+    )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def inventory_item_barcode_png(request, pk: int):
+    """PNG del código de barras (Code128) del producto."""
+    from .barcodes import barcode_png_response
+    item = _get_item_or_404(pk)
+    if item is None:
+        return Response({'detail': 'Producto no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+    return barcode_png_response(item)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def inventory_item_etiqueta_pdf(request, pk: int):
+    """PDF con `copies` etiquetas de un producto. Default 1, máx 100."""
+    from .barcodes import etiqueta_pdf_response
+    item = _get_item_or_404(pk)
+    if item is None:
+        return Response({'detail': 'Producto no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+    copies = _parse_int(request.query_params.get('copies'), 1, 1, 100)
+    return etiqueta_pdf_response(item, copies=copies)
+
+
+@api_view(['GET', 'POST'])
+@permission_classes([IsAuthenticated])
+def inventory_etiquetas_lote_pdf(request):
+    """PDF con etiquetas de varios productos.
+
+    GET: ?ids=1,2,3&copies=N  o  ?branch=<id>&copies=N (todos los activos del branch)
+    POST: body JSON { ids: [..], copies: N }
+    """
+    from .barcodes import etiquetas_lote_pdf_response
+
+    if request.method == 'POST':
+        ids_raw = request.data.get('ids') or []
+        copies = _parse_int(request.data.get('copies'), 1, 1, 50)
+        if not isinstance(ids_raw, list):
+            return Response({'detail': 'ids debe ser lista de enteros.'}, status=400)
+        ids = [int(i) for i in ids_raw if str(i).isdigit()]
+    else:
+        ids_raw = (request.query_params.get('ids') or '').strip()
+        copies = _parse_int(request.query_params.get('copies'), 1, 1, 50)
+        ids = [int(x) for x in ids_raw.split(',') if x.strip().isdigit()] if ids_raw else []
+
+    qs = InventoryItem.objects.select_related('branch', 'category').filter(is_active=True)
+    if ids:
+        qs = qs.filter(pk__in=ids)
+    else:
+        branch = request.query_params.get('branch') or request.data.get('branch') if request.method == 'POST' else request.query_params.get('branch')
+        if branch and str(branch).isdigit() and int(branch) > 0:
+            qs = qs.filter(branch_id=int(branch))
+        else:
+            return Response(
+                {'detail': 'Debe enviar ids=[...] o branch=<id>.'},
+                status=400,
+            )
+    qs = qs.order_by('branch__name', 'name', 'sku')[:500]
+    items = list(qs)
+    if not items:
+        return Response({'detail': 'No hay productos para imprimir.'}, status=404)
+    return etiquetas_lote_pdf_response(items, copies=copies)

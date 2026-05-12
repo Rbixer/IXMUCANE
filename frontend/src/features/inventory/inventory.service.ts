@@ -110,3 +110,69 @@ export async function deleteInventoryItem(itemId: number) {
   await api.delete(`/inventory/${id}/`)
 }
 
+/* ── Códigos de barra / etiquetas ──────────────────────────────────────── */
+
+export function inventoryBarcodePngUrl(itemId: number): string {
+  const base = api.defaults.baseURL ?? ''
+  return `${base}/inventory/items/${itemId}/barcode.png`
+}
+
+async function downloadBlob(url: string, filename: string, params?: Record<string, string | number>) {
+  const response = await api.get<ArrayBuffer>(url, {
+    responseType: 'arraybuffer',
+    params,
+    headers: { Accept: 'application/pdf, application/json;q=0.1', 'Cache-Control': 'no-cache' },
+    transformResponse: [(data) => data],
+  })
+  const buf = response.data
+  if (!(buf instanceof ArrayBuffer) || buf.byteLength === 0) {
+    throw new Error('El servidor devolvió un archivo vacío.')
+  }
+  const blob = new Blob([buf], { type: 'application/pdf' })
+  const objectUrl = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = objectUrl
+  a.download = filename
+  a.rel = 'noopener'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  queueMicrotask(() => URL.revokeObjectURL(objectUrl))
+}
+
+export async function downloadEtiquetaProducto(itemId: number, copies: number = 1, sku?: string) {
+  const safe = (sku || `item-${itemId}`).replace(/[^A-Za-z0-9_-]/g, '_')
+  await downloadBlob(`/inventory/items/${itemId}/etiqueta-pdf/`, `etiqueta_${safe}.pdf`, {
+    copies: Math.max(1, Math.floor(copies)),
+  })
+}
+
+export async function downloadEtiquetasLote(ids: number[], copies: number = 1) {
+  if (ids.length === 0) throw new Error('Selecciona al menos un producto.')
+  const response = await api.post<ArrayBuffer>(
+    '/inventory/etiquetas-lote-pdf/',
+    { ids, copies: Math.max(1, Math.floor(copies)) },
+    {
+      responseType: 'arraybuffer',
+      headers: { Accept: 'application/pdf, application/json;q=0.1' },
+      transformResponse: [(data) => data],
+    },
+  )
+  const buf = response.data
+  if (!(buf instanceof ArrayBuffer) || buf.byteLength === 0) {
+    throw new Error('El servidor devolvió un archivo vacío.')
+  }
+  const blob = new Blob([buf], { type: 'application/pdf' })
+  const objectUrl = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  const ts = new Date().toISOString()
+  const stamp = `${ts.slice(0, 10)}_${ts.slice(11, 16).replace(':', '')}`
+  a.href = objectUrl
+  a.download = `etiquetas_lote_${stamp}.pdf`
+  a.rel = 'noopener'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  queueMicrotask(() => URL.revokeObjectURL(objectUrl))
+}
+

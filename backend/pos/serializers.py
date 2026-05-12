@@ -14,7 +14,7 @@ from .models import Customer, Quote, QuoteLine, Sale, SaleLine
 class CustomerSerializer(serializers.ModelSerializer):
     class Meta:
         model = Customer
-        fields = ['id', 'name', 'nit', 'phone', 'email', 'address', 'created_at']
+        fields = ['id', 'name', 'nit', 'phone', 'email', 'address', 'is_active', 'created_at']
         read_only_fields = ['id', 'created_at']
 
 
@@ -81,10 +81,27 @@ class SaleLineReadSerializer(serializers.ModelSerializer):
         }
 
 
+def _fel_summary(obj: Sale) -> dict:
+    """Devuelve un resumen del estado FEL para listas y detalles, o None si no hay."""
+    fel = getattr(obj, 'fel', None)
+    if fel is None:
+        return None
+    return {
+        'estado': fel.estado,
+        'serie': fel.serie or '',
+        'numero_autorizacion': fel.numero_autorizacion or '',
+        'fecha_certificacion': (
+            fel.fecha_certificacion.isoformat() if fel.fecha_certificacion else None
+        ),
+        'ambiente': fel.ambiente,
+    }
+
+
 class SaleReadSerializer(serializers.ModelSerializer):
     lines = SaleLineReadSerializer(many=True, read_only=True)
     branch_name = serializers.CharField(source='branch.name', read_only=True)
     balance_due = serializers.SerializerMethodField()
+    fel = serializers.SerializerMethodField()
 
     class Meta:
         model = Sale
@@ -94,6 +111,7 @@ class SaleReadSerializer(serializers.ModelSerializer):
             'branch_name',
             'customer',
             'customer_name',
+            'customer_nit',
             'customer_phone',
             'customer_email',
             'customer_address',
@@ -105,8 +123,10 @@ class SaleReadSerializer(serializers.ModelSerializer):
             'total',
             'amount_paid',
             'balance_due',
+            'is_envio',
             'created_at',
             'lines',
+            'fel',
         ]
         read_only_fields = fields
 
@@ -114,6 +134,9 @@ class SaleReadSerializer(serializers.ModelSerializer):
         total = obj.total or Decimal('0')
         paid = obj.amount_paid or Decimal('0')
         return str(max(Decimal('0'), total - paid))
+
+    def get_fel(self, obj: Sale):
+        return _fel_summary(obj)
 
 
 class SaleLineWriteSerializer(serializers.Serializer):
@@ -148,6 +171,7 @@ class SaleCreateSerializer(serializers.Serializer):
         queryset=Customer.objects.all(), required=False, allow_null=True
     )
     customer_name = serializers.CharField(required=False, allow_blank=True, default='')
+    customer_nit = serializers.CharField(required=False, allow_blank=True, default='')
     customer_phone = serializers.CharField(required=False, allow_blank=True, default='')
     customer_email = serializers.CharField(required=False, allow_blank=True, default='')
     customer_address = serializers.CharField(required=False, allow_blank=True, default='')
@@ -163,17 +187,20 @@ class SaleCreateSerializer(serializers.Serializer):
         max_digits=10, decimal_places=2, min_value=Decimal('0'),
         default=Decimal('0'), required=False,
     )
+    is_envio = serializers.BooleanField(default=False, required=False)
     lines = SaleLineWriteSerializer(many=True, min_length=1)
 
     def create(self, validated_data):
         branch: Branch = validated_data['branch']
         customer: Customer | None = validated_data.get('customer')
         customer_name = (validated_data.get('customer_name') or '').strip()
+        customer_nit = (validated_data.get('customer_nit') or '').strip()
         customer_phone = (validated_data.get('customer_phone') or '').strip()
         customer_email = (validated_data.get('customer_email') or '').strip()
         customer_address = (validated_data.get('customer_address') or '').strip()
         if customer is not None:
             customer_name = customer.name
+            customer_nit = customer.nit or customer_nit
             customer_phone = customer.phone
             customer_email = customer.email
             customer_address = customer.address
@@ -182,6 +209,7 @@ class SaleCreateSerializer(serializers.Serializer):
         credit_days = int(validated_data.get('credit_days') or 0)
         credit_note = (validated_data.get('credit_note') or '').strip()
         discount = Decimal(str(validated_data.get('discount') or 0))
+        is_envio = bool(validated_data.get('is_envio') or False)
         line_inputs = validated_data['lines']
 
         with transaction.atomic():
@@ -190,6 +218,7 @@ class SaleCreateSerializer(serializers.Serializer):
                 branch=branch,
                 customer=customer,
                 customer_name=customer_name,
+                customer_nit=customer_nit,
                 customer_phone=customer_phone,
                 customer_email=customer_email,
                 customer_address=customer_address,
@@ -198,6 +227,7 @@ class SaleCreateSerializer(serializers.Serializer):
                 credit_days=credit_days,
                 credit_note=credit_note,
                 discount=discount,
+                is_envio=is_envio,
                 total=Decimal('0'),
             )
             lines_to_create: list[SaleLine] = []
@@ -282,6 +312,7 @@ class SaleListSerializer(serializers.ModelSerializer):
     total_units = serializers.SerializerMethodField()
     balance_due = serializers.SerializerMethodField()
     lines = SaleLineListRowSerializer(many=True, read_only=True)
+    fel = serializers.SerializerMethodField()
 
     class Meta:
         model = Sale
@@ -291,6 +322,7 @@ class SaleListSerializer(serializers.ModelSerializer):
             'branch_name',
             'customer',
             'customer_name',
+            'customer_nit',
             'customer_phone',
             'customer_email',
             'customer_address',
@@ -302,11 +334,16 @@ class SaleListSerializer(serializers.ModelSerializer):
             'total',
             'amount_paid',
             'balance_due',
+            'is_envio',
             'created_at',
             'lines_count',
             'total_units',
             'lines',
+            'fel',
         ]
+
+    def get_fel(self, obj: Sale):
+        return _fel_summary(obj)
 
     def get_balance_due(self, obj: Sale) -> str:
         total = obj.total or Decimal('0')

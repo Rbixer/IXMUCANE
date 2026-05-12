@@ -24,12 +24,25 @@ class SupplierViewSet(
     mixins.DestroyModelMixin,
     viewsets.GenericViewSet,
 ):
-    queryset = Supplier.objects.all()
     serializer_class = SupplierSerializer
     permission_classes = [IsAuthenticated]
 
+    def get_queryset(self):
+        qs = Supplier.objects.all()
+        include_inactive = str(self.request.query_params.get('include_inactive', '')).lower() in ('1', 'true')
+        if not include_inactive:
+            qs = qs.filter(is_active=True)
+        return qs
+
     def destroy(self, request, *args, **kwargs):
+        """Soft-delete por defecto. Pasar `?hard=1` para borrado físico (rechazado si tiene órdenes)."""
         supplier = self.get_object()
+        hard = str(request.query_params.get('hard', '')).lower() in ('1', 'true')
+        if not hard:
+            if supplier.is_active:
+                supplier.is_active = False
+                supplier.save(update_fields=['is_active'])
+            return Response(status=status.HTTP_204_NO_CONTENT)
         if supplier.purchase_orders.exists():
             return Response(
                 {
@@ -40,13 +53,21 @@ class SupplierViewSet(
         return super().destroy(request, *args, **kwargs)
 
 
-class PurchaseOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
+class PurchaseOrderViewSet(
+    mixins.ListModelMixin,
+    mixins.RetrieveModelMixin,
+    mixins.DestroyModelMixin,
+    viewsets.GenericViewSet,
+):
     queryset = PurchaseOrder.objects.select_related('supplier', 'branch').prefetch_related('lines__inventory_item').all()
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         qs = super().get_queryset()
         branch = self.request.query_params.get('branch')
+        include_inactive = str(self.request.query_params.get('include_inactive', '')).lower() in ('1', 'true')
+        if not include_inactive:
+            qs = qs.filter(is_active=True)
         if branch and str(branch).isdigit():
             qs = qs.filter(branch_id=int(branch))
         return qs.order_by('-created_at')
@@ -63,6 +84,18 @@ class PurchaseOrderViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, vie
         return Response(PurchaseOrderReadSerializer(order).data, status=status.HTTP_201_CREATED)
 
     def perform_destroy(self, instance: PurchaseOrder) -> None:
+        """Soft-delete por defecto: oculta la orden sin tocar stock.
+
+        Con `?hard=1` se ejecuta el flujo histórico que revierte stock
+        (validando que no quede negativo) y borra físicamente la orden.
+        """
+        hard = str(self.request.query_params.get('hard', '')).lower() in ('1', 'true')
+        if not hard:
+            if instance.is_active:
+                instance.is_active = False
+                instance.save(update_fields=['is_active'])
+            return
+
         with transaction.atomic():
             lines = list(instance.lines.select_related('inventory_item').all())
             for ln in lines:

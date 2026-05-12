@@ -9,6 +9,10 @@ class Customer(models.Model):
     phone = models.CharField(max_length=40, blank=True, default='')
     email = models.EmailField(blank=True, default='')
     address = models.TextField(blank=True, default='')
+    is_active = models.BooleanField(
+        default=True,
+        help_text='Soft-delete: si está en False el cliente queda oculto del listado.',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -87,6 +91,12 @@ class Sale(models.Model):
         blank=True,
     )
     customer_name = models.CharField(max_length=200, blank=True, default='')
+    customer_nit = models.CharField(
+        max_length=80,
+        blank=True,
+        default='',
+        help_text='NIT del receptor para FEL (CF si está vacío).',
+    )
     customer_phone = models.CharField(max_length=40, blank=True, default='')
     customer_email = models.EmailField(blank=True, default='')
     customer_address = models.TextField(blank=True, default='')
@@ -115,6 +125,13 @@ class Sale(models.Model):
         decimal_places=2,
         default=0,
         help_text='Suma de abonos recibidos (crédito/pendiente). Si alcanza el total, la venta queda pagada.',
+    )
+    is_envio = models.BooleanField(
+        default=False,
+        help_text=(
+            'Si está activo la venta se procesa como ENVÍO/recibo y NO se '
+            'certifica en FEL automáticamente.'
+        ),
     )
     created_at = models.DateTimeField(auto_now_add=True)
 

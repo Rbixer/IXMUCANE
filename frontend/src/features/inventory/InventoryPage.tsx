@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Pencil, ShoppingCart, Trash2 } from 'lucide-react'
+import { Barcode, Pencil, Printer, ShoppingCart, Trash2 } from 'lucide-react'
 import {
   createInventoryItem,
   deleteInventoryItem,
+  downloadEtiquetaProducto,
+  downloadEtiquetasLote,
   listInventory,
   updateInventoryItem,
   type CreateInventoryPayload,
@@ -122,6 +124,11 @@ export function InventoryPage() {
   const [cartError, setCartError] = useState('')
   const [cartRevision, setCartRevision] = useState(0)
   const [previewItem, setPreviewItem] = useState<InventoryItem | null>(null)
+  const [labelsModalOpen, setLabelsModalOpen] = useState(false)
+  const [labelsCopies, setLabelsCopies] = useState(1)
+  const [labelsSelectedIds, setLabelsSelectedIds] = useState<Set<number>>(new Set())
+  const [labelsBusy, setLabelsBusy] = useState(false)
+  const [singleLabelBusyId, setSingleLabelBusyId] = useState<number | null>(null)
   const [apiError, setApiError] = useState('')
   /** Errores al eliminar desde la tabla (el modal usa `apiError`). */
   const [listDeleteError, setListDeleteError] = useState('')
@@ -569,6 +576,55 @@ export function InventoryPage() {
     }
   }
 
+  const handleDownloadSingleLabel = async (item: InventoryItem, copies = 1) => {
+    setSingleLabelBusyId(item.id)
+    try {
+      await downloadEtiquetaProducto(item.id, copies, item.sku)
+      notifySuccess(`Etiqueta de «${item.sku}» generada (${copies} copia${copies !== 1 ? 's' : ''}).`)
+    } catch (e) {
+      notifyError(e instanceof Error ? e.message : 'No se pudo generar la etiqueta.')
+    } finally {
+      setSingleLabelBusyId(null)
+    }
+  }
+
+  const openLabelsBatchModal = () => {
+    setLabelsSelectedIds(new Set(visibleRows.map((r) => r.id)))
+    setLabelsCopies(1)
+    setLabelsModalOpen(true)
+  }
+
+  const toggleLabelSelection = (id: number) => {
+    setLabelsSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const setAllLabelsSelected = (checked: boolean) => {
+    setLabelsSelectedIds(checked ? new Set(visibleRows.map((r) => r.id)) : new Set())
+  }
+
+  const handleDownloadBatchLabels = async () => {
+    const ids = Array.from(labelsSelectedIds)
+    if (ids.length === 0) {
+      notifyError('Selecciona al menos un producto.')
+      return
+    }
+    setLabelsBusy(true)
+    try {
+      await downloadEtiquetasLote(ids, labelsCopies)
+      notifySuccess(`PDF generado con ${ids.length * labelsCopies} etiquetas.`)
+      setLabelsModalOpen(false)
+    } catch (e) {
+      notifyError(e instanceof Error ? e.message : 'No se pudo generar el PDF.')
+    } finally {
+      setLabelsBusy(false)
+    }
+  }
+
   return (
     <>
       <div className="mx-auto w-full max-w-[min(100%,68rem)] space-y-4">
@@ -598,16 +654,28 @@ export function InventoryPage() {
                   : 'Gestión completa del catálogo · Precios · Stock · Jerarquías'}
               </p>
             </div>
-            {!soloLecturaInventario && !bodegaSinConfigurar ? (
+            <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
-                onClick={handleOpenCreateModal}
-                className="flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-black text-white transition"
-                style={{ background: '#DC2626' }}
+                onClick={openLabelsBatchModal}
+                disabled={visibleRows.length === 0}
+                className="flex items-center gap-2 rounded-xl border border-white/20 bg-white/10 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-white/20 disabled:opacity-40"
+                title="Imprimir etiquetas con código de barra para varios productos"
               >
-                + Agregar producto
+                <Printer size={15} />
+                Imprimir etiquetas
               </button>
-            ) : null}
+              {!soloLecturaInventario && !bodegaSinConfigurar ? (
+                <button
+                  type="button"
+                  onClick={handleOpenCreateModal}
+                  className="flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-black text-white transition"
+                  style={{ background: '#DC2626' }}
+                >
+                  + Agregar producto
+                </button>
+              ) : null}
+            </div>
           </div>
 
           {/* Stats rápidas */}
@@ -811,6 +879,16 @@ export function InventoryPage() {
                     >
                       <ShoppingCart size={13} aria-hidden />
                     </button>
+                    <button
+                      type="button"
+                      disabled={singleLabelBusyId === item.id}
+                      onClick={(e) => { e.stopPropagation(); void handleDownloadSingleLabel(item, 1) }}
+                      aria-label="Descargar etiqueta con código de barras"
+                      title="Descargar etiqueta (PDF) con código de barras"
+                      className="flex h-7 w-7 items-center justify-center rounded-lg border border-violet-200 bg-violet-50 text-violet-700 transition hover:bg-violet-100 disabled:opacity-40"
+                    >
+                      <Barcode size={13} aria-hidden />
+                    </button>
                     {!soloLecturaInventario ? (
                       <>
                         <button
@@ -934,6 +1012,147 @@ export function InventoryPage() {
                   Cerrar
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {labelsModalOpen ? (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-950/60 p-4"
+          role="dialog"
+          aria-modal="true"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setLabelsModalOpen(false)
+          }}
+        >
+          <div className="w-full max-w-2xl rounded-2xl bg-white shadow-2xl flex flex-col max-h-[90vh]">
+            {/* Header */}
+            <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
+              <div className="flex items-center gap-3">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-violet-50">
+                  <Barcode size={18} className="text-violet-600" />
+                </div>
+                <div>
+                  <h2 className="text-base font-black text-gray-900">Imprimir etiquetas</h2>
+                  <p className="text-xs font-medium text-gray-400">
+                    Genera un PDF con códigos de barra de los productos seleccionados.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setLabelsModalOpen(false)}
+                className="flex h-8 w-8 items-center justify-center rounded-xl border border-gray-200 text-gray-400 hover:bg-gray-50"
+              >
+                ×
+              </button>
+            </div>
+
+            {/* Controles */}
+            <div className="grid grid-cols-1 gap-4 border-b border-gray-100 px-5 py-4 sm:grid-cols-3">
+              <div>
+                <label className="mb-1 block text-xs font-bold uppercase tracking-wider text-gray-500">
+                  Copias por producto
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={labelsCopies}
+                  onChange={(e) => setLabelsCopies(Math.max(1, Math.min(50, Number(e.target.value) || 1)))}
+                  className="w-full rounded-xl border border-gray-200 bg-gray-50 px-3 py-2 text-sm font-bold tabular-nums text-gray-900 outline-none focus:border-violet-300 focus:bg-white focus:ring-2 focus:ring-violet-100"
+                />
+              </div>
+              <div className="sm:col-span-2 flex items-end justify-between gap-2">
+                <div className="text-xs">
+                  <p className="font-bold text-gray-700">
+                    {labelsSelectedIds.size} de {visibleRows.length} seleccionados
+                  </p>
+                  <p className="text-gray-500">
+                    {labelsSelectedIds.size * labelsCopies} etiquetas en total
+                    · ~{Math.ceil((labelsSelectedIds.size * labelsCopies) / 24)} hojas (24 por hoja carta)
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setAllLabelsSelected(true)}
+                    className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-bold text-gray-700 hover:bg-gray-50"
+                  >
+                    Seleccionar todo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAllLabelsSelected(false)}
+                    className="rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-bold text-gray-700 hover:bg-gray-50"
+                  >
+                    Limpiar
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Lista de productos */}
+            <div className="flex-1 overflow-y-auto px-5 py-3">
+              {visibleRows.length === 0 ? (
+                <p className="py-8 text-center text-sm text-gray-400">
+                  No hay productos en la vista actual. Ajusta los filtros y vuelve a intentar.
+                </p>
+              ) : (
+                <div className="space-y-1.5">
+                  {visibleRows.map((item) => {
+                    const checked = labelsSelectedIds.has(item.id)
+                    return (
+                      <label
+                        key={item.id}
+                        className={
+                          'flex cursor-pointer items-center gap-3 rounded-xl border px-3 py-2 text-sm transition ' +
+                          (checked
+                            ? 'border-violet-300 bg-violet-50'
+                            : 'border-gray-200 bg-white hover:bg-gray-50')
+                        }
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleLabelSelection(item.id)}
+                          className="h-4 w-4 rounded text-violet-600 focus:ring-violet-500"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <p className="truncate font-bold text-gray-900">{item.name}</p>
+                          <p className="font-mono text-[11px] text-gray-500">
+                            SKU: {item.sku || `IXM-${String(item.id).padStart(6, '0')}`} · Stock: {item.quantity}
+                          </p>
+                        </div>
+                        <span className="text-xs font-bold tabular-nums text-gray-700">
+                          Q {item.unit_price}
+                        </span>
+                      </label>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-end gap-3 border-t border-gray-100 px-5 py-4">
+              <button
+                type="button"
+                onClick={() => setLabelsModalOpen(false)}
+                className="rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-bold text-gray-700 hover:bg-gray-50"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleDownloadBatchLabels()}
+                disabled={labelsBusy || labelsSelectedIds.size === 0}
+                className="flex items-center gap-2 rounded-xl bg-violet-600 px-5 py-2.5 text-sm font-black text-white transition hover:bg-violet-700 disabled:opacity-50"
+              >
+                <Printer size={14} />
+                {labelsBusy ? 'Generando…' : 'Generar PDF'}
+              </button>
             </div>
           </div>
         </div>

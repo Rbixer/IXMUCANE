@@ -1,0 +1,16 @@
+[Unit]
+Description=IXMUCANE Gunicorn
+After=network.target
+
+[Service]
+User=www-data
+Group=www-data
+# Gunicorn escribe ~/.gunicorn; www-data no puede crear /var/www/.gunicorn
+Environment=HOME=/var/lib/ixmucane-gunicorn
+WorkingDirectory=/var/www/ixmucane/backend
+EnvironmentFile=/var/www/ixmucane/backend/.env
+ExecStart=/var/www/ixmucane/venv/bin/gunicorn --bind 127.0.0.1:8001 --workers 2 --timeout 120 config.wsgi:application
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

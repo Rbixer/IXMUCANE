@@ -171,12 +171,21 @@ export const posSaleLineReadSchema = z.object({
   jerarquia: stockHierarchySchema.optional(),
 })
 
+export const posSaleFelSummarySchema = z.object({
+  estado: z.enum(['pendiente', 'certificado', 'rechazado', 'error']),
+  serie: z.string().optional().default(''),
+  numero_autorizacion: z.string().optional().default(''),
+  fecha_certificacion: z.union([z.string(), z.null()]).optional().default(null),
+  ambiente: z.enum(['pruebas', 'produccion']).optional().default('pruebas'),
+})
+
 export const posSaleReadSchema = z.object({
   id: idCoerce,
   branch: idCoerce,
   branch_name: z.string(),
   customer: z.union([z.null(), idCoerce]).optional().default(null),
   customer_name: z.string().optional().default(''),
+  customer_nit: z.string().optional().default(''),
   customer_phone: z.string().optional().default(''),
   customer_email: z.string().optional().default(''),
   customer_address: z.string().optional().default(''),
@@ -188,8 +197,10 @@ export const posSaleReadSchema = z.object({
   total: priceString,
   amount_paid: priceString.optional().default('0.00'),
   balance_due: priceString.optional().default('0.00'),
+  is_envio: z.boolean().optional().default(false),
   created_at: z.string(),
   lines: z.array(posSaleLineReadSchema),
+  fel: z.union([posSaleFelSummarySchema, z.null()]).optional().default(null),
 })
 
 export const posSaleListItemSchema = z.object({
@@ -198,6 +209,7 @@ export const posSaleListItemSchema = z.object({
   branch_name: z.string(),
   customer: z.union([z.null(), idCoerce]).optional().default(null),
   customer_name: z.string().optional().default(''),
+  customer_nit: z.string().optional().default(''),
   customer_phone: z.string().optional().default(''),
   customer_email: z.string().optional().default(''),
   customer_address: z.string().optional().default(''),
@@ -209,10 +221,12 @@ export const posSaleListItemSchema = z.object({
   total: priceString,
   amount_paid: priceString.optional().default('0.00'),
   balance_due: priceString.optional().default('0.00'),
+  is_envio: z.boolean().optional().default(false),
   created_at: z.string(),
   lines_count: z.coerce.number().int().min(0),
   total_units: z.coerce.number().int().min(0).default(0),
   lines: z.array(pedidoInventoryLineSchema).optional(),
+  fel: z.union([posSaleFelSummarySchema, z.null()]).optional().default(null),
 })
 
 export function parsePosSaleRead(data: unknown) {
@@ -305,6 +319,7 @@ export const posCustomerSchema = z.object({
   phone: z.string().optional().default(''),
   email: z.string().optional().default(''),
   address: z.string().optional().default(''),
+  is_active: z.boolean().optional().default(true),
   created_at: z.string().optional(),
 })
 

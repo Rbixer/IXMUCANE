@@ -15,6 +15,7 @@ import {
   ReceiptText,
   Search,
   Trash2,
+  Truck,
   User,
   UserCircle,
   X,
@@ -23,8 +24,8 @@ import { listBranches } from '../branches/branches.service'
 import { listInventory } from '../inventory/inventory.service'
 import { pickPrimaryInventoryBranchId } from '../../shared/lib/defaultBranch'
 import { SaleReceiptModal } from '../pos/SaleReceiptModal'
-import { createPosSale, deletePosSale, listPosCustomers, listPosSales } from '../pos/pos.service'
-import type { PaymentStatus, PosCustomer, PosSale, UnitKind } from '../pos/pos.service'
+import { consultarNit, createPosCustomer, createPosSale, deletePosSale, listPosCustomers, listPosSales } from '../pos/pos.service'
+import type { NitLookupResult, PaymentStatus, PosCustomer, PosSale, UnitKind } from '../pos/pos.service'
 import { esPanelSoloLecturaEnModulo } from '../../shared/lib/accesoSesion'
 import { formatHierarchyLabel, splitStockHierarchy } from '../../shared/lib/unitHierarchy'
 import type { InventoryItem } from '../../shared/types/domain'
@@ -130,9 +131,13 @@ export function VentasPage() {
   const [customerSearch, setCustomerSearch] = useState('')
   const [selectedCustomerId, setSelectedCustomerId] = useState<number | null>(null)
   const [customerName, setCustomerName] = useState('')
+  const [customerNit, setCustomerNit] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
   const [customerEmail, setCustomerEmail] = useState('')
   const [customerAddress, setCustomerAddress] = useState('')
+  const [nitLookupLoading, setNitLookupLoading] = useState(false)
+  const [nitLookupResult, setNitLookupResult] = useState<NitLookupResult | null>(null)
+  const [savingNewCustomer, setSavingNewCustomer] = useState(false)
   const [formError, setFormError] = useState('')
   const [receiptSale, setReceiptSale] = useState<PosSale | null>(null)
   const [productSearch, setProductSearch] = useState('')
@@ -270,12 +275,14 @@ export function VentasPage() {
       setFormError('')
       setLines([])
       setCustomerName('')
+      setCustomerNit('')
       setCustomerPhone('')
       setCustomerEmail('')
       setCustomerAddress('')
       setCustomerSearch('')
       setSelectedCustomerId(null)
       setCustomerExpanded(false)
+      setNitLookupResult(null)
       setDiscountInput('')
       setPaymentStatus('paid')
       setCreditDays('30')
@@ -386,15 +393,91 @@ export function VentasPage() {
     setSelectedCustomerId(c.id)
     setCustomerSearch(c.name)
     setCustomerName(c.name || '')
+    setCustomerNit(c.nit || '')
     setCustomerPhone(c.phone || '')
     setCustomerEmail(c.email || '')
     setCustomerAddress(c.address || '')
     setCustomerDropOpen(false)
     setCustomerExpanded(true)
+    setNitLookupResult(null)
   }
 
-  const submit = (e: FormEvent) => {
-    e.preventDefault()
+  const lookupNit = async () => {
+    const value = customerNit.trim()
+    if (!value) {
+      setNitLookupResult(null)
+      return
+    }
+    setNitLookupLoading(true)
+    try {
+      const res = await consultarNit(value)
+      setNitLookupResult(res)
+      if (res.found) {
+        if (res.source === 'cf') {
+          setCustomerName('Consumidor Final')
+          setCustomerNit('CF')
+          setSelectedCustomerId(null)
+        } else {
+          if (res.nombre) setCustomerName(res.nombre)
+          if (res.direccion) setCustomerAddress(res.direccion)
+          if (res.phone) setCustomerPhone(res.phone)
+          if (res.email) setCustomerEmail(res.email)
+          if (res.nit) setCustomerNit(res.nit)
+          if (res.customer_id != null) setSelectedCustomerId(res.customer_id)
+          else setSelectedCustomerId(null)
+          notifySuccess(
+            res.source === 'sat'
+              ? `NIT validado en SAT: ${res.nombre}`
+              : `Cliente encontrado: ${res.nombre}`,
+          )
+        }
+      }
+    } finally {
+      setNitLookupLoading(false)
+    }
+  }
+
+  const saveNitAsCustomer = async () => {
+    const nit = customerNit.trim()
+    const name = customerName.trim()
+    if (!nit) {
+      notifyError('Ingrese un NIT primero.')
+      return
+    }
+    if (!name) {
+      notifyError('Ingrese el nombre del cliente para guardarlo.')
+      return
+    }
+    setSavingNewCustomer(true)
+    try {
+      const created = await createPosCustomer({
+        name,
+        nit,
+        phone: customerPhone.trim(),
+        email: customerEmail.trim(),
+        address: customerAddress.trim(),
+      })
+      setSelectedCustomerId(created.id)
+      setNitLookupResult({
+        found: true,
+        source: 'local',
+        nit: created.nit,
+        nombre: created.name,
+        direccion: created.address,
+        phone: created.phone,
+        email: created.email,
+        customer_id: created.id,
+      })
+      notifySuccess('Cliente guardado en el directorio.')
+      void queryClient.invalidateQueries({ queryKey: ['pos', 'customers'] })
+    } catch (e) {
+      notifyError(e instanceof Error ? e.message : 'No se pudo guardar el cliente.')
+    } finally {
+      setSavingNewCustomer(false)
+    }
+  }
+
+  const submitVenta = (opts: { is_envio?: boolean } = {}) => {
     setFormError('')
     if (soloLecturaPos) { setFormError('Sin permiso de módulo POS.'); return }
     if (branchId <= 0)  { setFormError('No hay inventario configurado.'); return }
@@ -403,6 +486,7 @@ export function VentasPage() {
       branch: branchId,
       customer: selectedCustomerId,
       customer_name: customerName.trim(),
+      customer_nit: customerNit.trim(),
       customer_phone: customerPhone.trim(),
       customer_email: customerEmail.trim(),
       customer_address: customerAddress.trim(),
@@ -411,6 +495,7 @@ export function VentasPage() {
       credit_days: paymentStatus === 'credit' ? Math.max(0, Number(creditDays) || 0) : 0,
       credit_note: (paymentStatus === 'credit' || paymentStatus === 'pending') ? creditNote.trim() : '',
       discount: discountAmount > 0 ? discountAmount : undefined,
+      is_envio: opts.is_envio === true,
       lines: lines.map((l) => ({
         inventory_item: l.inventory_item,
         quantity: Math.max(1, Math.floor(l.quantity) || 1),
@@ -418,6 +503,15 @@ export function VentasPage() {
         unit_price: String(l.unit_price),
       })),
     })
+  }
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    submitVenta({ is_envio: false })
+  }
+
+  const submitEnvio = () => {
+    submitVenta({ is_envio: true })
   }
 
   /* ── Render ──────────────────────────────────────────────────────────── */
@@ -428,6 +522,32 @@ export function VentasPage() {
       {soloLecturaPos ? (
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           Solo puede <strong>consultar</strong> ventas. Un administrador debe asignarle el permiso POS para registrar.
+        </div>
+      ) : null}
+
+      {/* ── Banda superior: procesar como envío ─────────────────────── */}
+      {!soloLecturaPos ? (
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-2xl border-2 border-dashed border-amber-300 bg-amber-50 px-4 py-3">
+          <div className="flex items-center gap-2 text-sm">
+            <Truck size={18} className="text-amber-600" />
+            <span className="font-bold text-amber-900">Modo envío</span>
+            <span className="text-amber-800/80">
+              — registra la venta y genera un recibo del envío.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={submitEnvio}
+            disabled={saleMutation.isPending || branchId <= 0 || lines.length === 0}
+            title="Procesa la venta como envío y genera un recibo."
+            className="flex items-center gap-2 rounded-xl bg-amber-600 px-4 py-2 text-sm font-bold text-white shadow-sm transition hover:bg-amber-700 disabled:opacity-50"
+          >
+            <Truck size={14} />
+            <span>
+              Procesar como envío
+              {lines.length > 0 ? ` · ${fmtQ(estimatedTotal)}` : ''}
+            </span>
+          </button>
         </div>
       ) : null}
 
@@ -999,6 +1119,11 @@ export function VentasPage() {
                 />
                 <span className="text-xs font-semibold text-app-text">
                   {customerName ? customerName : 'Cliente (opcional)'}
+                  {customerNit ? (
+                    <span className="ml-1.5 rounded-full bg-brand-50 px-1.5 py-0.5 font-mono text-[10px] font-bold text-brand-700">
+                      {customerNit}
+                    </span>
+                  ) : null}
                 </span>
                 {customerName ? (
                   <CheckCircle2 size={13} className="text-emerald-500" aria-hidden />
@@ -1035,9 +1160,11 @@ export function VentasPage() {
                           setCustomerSearch('')
                           setSelectedCustomerId(null)
                           setCustomerName('')
+                          setCustomerNit('')
                           setCustomerPhone('')
                           setCustomerEmail('')
                           setCustomerAddress('')
+                          setNitLookupResult(null)
                         }}
                         className="text-app-subtle hover:text-app-text"
                       >
@@ -1060,12 +1187,78 @@ export function VentasPage() {
                           </div>
                           <div className="min-w-0">
                             <p className="text-sm font-semibold text-app-text">{c.name}</p>
-                            <p className="text-xs text-app-muted">{c.phone || c.email || 'Sin contacto'}</p>
+                            <p className="text-xs text-app-muted">
+                              NIT: {c.nit || '—'} · {c.phone || c.email || 'Sin contacto'}
+                            </p>
                           </div>
                         </button>
                       ))}
                     </div>
                   ) : null}
+                </div>
+
+                {/* NIT — campo destacado para FEL */}
+                <div className="mb-3 rounded-xl border border-app-border bg-app-bg/60 p-3">
+                  <label className="mb-1 block text-[10px] font-bold uppercase tracking-wider text-app-muted">
+                    NIT del cliente (Factura electrónica)
+                  </label>
+                  <div className="flex flex-wrap items-stretch gap-2">
+                    <input
+                      className="input-base flex-1 min-w-[10rem] py-2 text-xs"
+                      placeholder='NIT (ej. 1234567 o "CF")'
+                      value={customerNit}
+                      onChange={(e) => {
+                        setCustomerNit(e.target.value.toUpperCase())
+                        setNitLookupResult(null)
+                      }}
+                      onBlur={() => {
+                        if (customerNit.trim() && !nitLookupResult) void lookupNit()
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          void lookupNit()
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void lookupNit()}
+                      disabled={nitLookupLoading || !customerNit.trim()}
+                      className="rounded-xl border border-brand-200 bg-brand-50 px-3 py-2 text-xs font-bold text-brand-700 transition hover:bg-brand-100 disabled:opacity-50"
+                    >
+                      {nitLookupLoading ? 'Buscando…' : 'Buscar NIT'}
+                    </button>
+                  </div>
+                  {nitLookupResult ? (
+                    nitLookupResult.found ? (
+                      <p className="mt-1.5 text-[11px] font-medium text-emerald-700">
+                        {nitLookupResult.source === 'cf'
+                          ? 'Consumidor final'
+                          : nitLookupResult.source === 'sat'
+                            ? `Validado en SAT: ${nitLookupResult.nombre}`
+                            : `Cliente del directorio: ${nitLookupResult.nombre}`}
+                      </p>
+                    ) : (
+                      <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+                        <p className="text-[11px] font-medium text-amber-700">
+                          NIT no registrado. Llene los datos y guárdelo si es nuevo.
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => void saveNitAsCustomer()}
+                          disabled={savingNewCustomer || !customerName.trim()}
+                          className="rounded-lg border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50"
+                        >
+                          {savingNewCustomer ? 'Guardando…' : 'Guardar como cliente nuevo'}
+                        </button>
+                      </div>
+                    )
+                  ) : (
+                    <p className="mt-1.5 text-[10px] text-app-muted">
+                      Si la venta es a consumidor final, escriba <code className="rounded bg-white px-1 font-mono">CF</code>.
+                    </p>
+                  )}
                 </div>
 
                 {/* Campos del cliente */}

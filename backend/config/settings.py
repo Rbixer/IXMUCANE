@@ -42,6 +42,16 @@ if _hosts:
 else:
     ALLOWED_HOSTS = ['127.0.0.1', 'localhost']
 
+_csrf_trusted = os.environ.get('DJANGO_CSRF_TRUSTED_ORIGINS', '').strip()
+if _csrf_trusted:
+    CSRF_TRUSTED_ORIGINS = [o.strip() for o in _csrf_trusted.split(',') if o.strip()]
+
+# Si está activo, cada venta nueva del POS dispara la certificación FEL contra
+# Corpo automáticamente justo después de guardarse en BD (vía transaction.on_commit).
+# Si la certificación falla (sin emisor, sin requestor, error de Corpo) la venta
+# queda creada igualmente y el FelDocumento se guarda como pendiente/error.
+FEL_AUTO_CERTIFICAR = _env_bool('FEL_AUTO_CERTIFICAR', 'false')
+
 
 # Application definition
 
@@ -62,6 +72,7 @@ INSTALLED_APPS = [
     'pos',
     'suppliers',
     'reports',
+    'fel',
 ]
 
 MIDDLEWARE = [
@@ -143,6 +154,7 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 STATICFILES_DIRS = [BASE_DIR / 'static']
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
@@ -190,17 +202,31 @@ LOGGING = {
             'format': '[{levelname}] {asctime} {name}: {message}',
             'style': '{',
         },
+        'django_error': {
+            'format': '[{levelname}] {asctime} {name}: {message}',
+            'style': '{',
+        },
     },
     'handlers': {
         'console': {
             'class': 'logging.StreamHandler',
             'formatter': 'boutique',
         },
+        'console_errors': {
+            'class': 'logging.StreamHandler',
+            'formatter': 'django_error',
+        },
     },
     'loggers': {
         'boutique.api': {
             'handlers': ['console'],
             'level': 'INFO',
+            'propagate': False,
+        },
+        # Errores de petición (traceback cuando Django lo tiene, p. ej. vistas sin capturar).
+        'django.request': {
+            'handlers': ['console_errors'],
+            'level': 'ERROR',
             'propagate': False,
         },
     },

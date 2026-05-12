@@ -60,6 +60,7 @@ urlpatterns = [
     path('api/v1/pos/', include('pos.urls')),
     path('api/v1/suppliers/', include('suppliers.urls')),
     path('api/v1/reports/', include('reports.urls')),
+    path('api/v1/fel/', include('fel.urls')),
     path('', api_root),
 ]
 

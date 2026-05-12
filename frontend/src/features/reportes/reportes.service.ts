@@ -241,6 +241,203 @@ export function saleFacturaPdfUrl(saleId: number): string {
   return `/pos/sales/${saleId}/factura-pdf/`
 }
 
+export function saleFacturaTicketPdfUrl(saleId: number): string {
+  return `/pos/sales/${saleId}/factura-ticket-pdf/`
+}
+
+/* ── Reporte de ganancias ─────────────────────────────────────────────── */
+
+export type GananciasPeriodo = 'semana' | 'quincena' | 'mes'
+
+export type GananciasKpis = {
+  tickets: number
+  unidades: number
+  ventas_brutas: string
+  ingresos: string
+  descuentos: string
+  costo: string
+  ganancia_bruta: string
+  ganancia_neta: string
+  margen_pct: string
+  ticket_promedio: string
+  ganancia_promedio: string
+}
+
+export type GananciasComparacion = {
+  tickets_prev: number
+  ventas_prev: string
+  ganancia_prev: string
+  delta_ventas_pct: string
+  delta_ganancia_pct: string
+  delta_tickets_pct: string
+}
+
+export type GananciasDailyRow = {
+  fecha: string | null
+  ingresos: string
+  ventas: string
+  costo: string
+  descuento: string
+  ganancia: string
+  tickets: number
+  unidades: number
+  margen_pct: string
+}
+
+export type GananciasProductoRow = {
+  id: number
+  sku: string
+  nombre: string
+  categoria: string
+  unidades: number
+  ingresos: string
+  costo: string
+  ganancia: string
+  margen_pct: string
+  tickets: number
+}
+
+export type GananciasCategoriaRow = {
+  categoria: string
+  ingresos: string
+  costo: string
+  ganancia: string
+  margen_pct: string
+  unidades: number
+  productos: number
+}
+
+export type GananciasSucursalRow = {
+  branch_id: number | null
+  branch_name: string
+  ingresos: string
+  costo: string
+  ganancia: string
+  margen_pct: string
+  unidades: number
+  tickets: number
+}
+
+export type GananciasPagoRow = {
+  metodo: string
+  metodo_label: string
+  tickets: number
+  ventas: string
+}
+
+export type GananciasEstadoRow = {
+  estado: string
+  estado_label: string
+  tickets: number
+  ventas: string
+  cobrado: string
+  pendiente: string
+}
+
+export type GananciasClienteRow = {
+  customer_id: number | null
+  nombre: string
+  nit: string
+  tickets: number
+  unidades: number
+  ingresos: string
+  ganancia: string
+}
+
+export type GananciasTicketRow = {
+  id: number
+  fecha: string
+  cliente: string
+  sucursal: string
+  lineas: number
+  ingresos: string
+  descuento: string
+  total: string
+  ganancia: string
+}
+
+export type GananciasReportJson = {
+  generated_at: string
+  periodo: GananciasPeriodo
+  periodo_label: string
+  desde: string
+  hasta: string
+  branch_id: number | null
+  kpis: GananciasKpis
+  comparacion: GananciasComparacion
+  serie_diaria: GananciasDailyRow[]
+  top_productos: GananciasProductoRow[]
+  top_categorias: GananciasCategoriaRow[]
+  por_sucursal: GananciasSucursalRow[]
+  por_pago: GananciasPagoRow[]
+  por_estado: GananciasEstadoRow[]
+  top_clientes: GananciasClienteRow[]
+  top_tickets: GananciasTicketRow[]
+}
+
+function gananciasUrl(kind: ReportKind, periodo: GananciasPeriodo, branchId?: number): string {
+  const s = new URLSearchParams()
+  s.set('periodo', periodo)
+  if (branchId != null && branchId > 0) s.set('branch', String(branchId))
+  s.set('_t', String(Date.now()))
+  return `/reports/ganancias/${kind}/?${s.toString()}`
+}
+
+export async function fetchReportGananciasJson(
+  periodo: GananciasPeriodo,
+  branchId?: number,
+): Promise<GananciasReportJson> {
+  const { data } = await api.get<GananciasReportJson>(gananciasUrl('json', periodo, branchId), {
+    headers: reportRequestHeaders('json'),
+  })
+  return data
+}
+
+export async function downloadGananciasReport(
+  format: 'pdf' | 'xlsx',
+  periodo: GananciasPeriodo,
+  branchId?: number,
+) {
+  const mime =
+    format === 'pdf'
+      ? 'application/pdf'
+      : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+
+  const url = gananciasUrl(format, periodo, branchId)
+  let response: Awaited<ReturnType<typeof api.get<ArrayBuffer>>>
+  try {
+    response = await api.get<ArrayBuffer>(url, {
+      responseType: 'arraybuffer',
+      headers: reportRequestHeaders(format),
+      transformResponse: [(data) => data],
+    })
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response?.data instanceof ArrayBuffer) {
+      const msg = decodeApiErrorFromBuffer(err.response.data)
+      if (msg) throw new Error(msg)
+    }
+    throw err
+  }
+  const buf = response.data
+  if (!(buf instanceof ArrayBuffer) || buf.byteLength === 0) {
+    throw new Error('El servidor devolvió un archivo vacío.')
+  }
+
+  const ts = new Date().toISOString()
+  const stamp = `${ts.slice(0, 10)}_${ts.slice(11, 16).replace(':', '')}`
+  const filename = `ganancias_${periodo}_${stamp}.${format}`
+  const blob = new Blob([buf], { type: mime })
+  const objectUrl = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = objectUrl
+  a.download = filename
+  a.rel = 'noopener'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  queueMicrotask(() => URL.revokeObjectURL(objectUrl))
+}
+
 export async function downloadCobrosReport() {
   const url = `/reports/cobros/pdf/?_t=${Date.now()}`
   let response: Awaited<ReturnType<typeof api.get<ArrayBuffer>>>

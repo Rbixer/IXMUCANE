@@ -25,12 +25,21 @@ export type PosSaleLine = {
   jerarquia?: StockHierarchyBreakdown
 }
 
+export type PosSaleFelSummary = {
+  estado: 'pendiente' | 'certificado' | 'rechazado' | 'error'
+  serie: string
+  numero_autorizacion: string
+  fecha_certificacion: string | null
+  ambiente: 'pruebas' | 'produccion'
+}
+
 export type PosSale = {
   id: number
   branch: number
   branch_name: string
   customer?: number | null
   customer_name?: string
+  customer_nit?: string
   customer_phone?: string
   customer_email?: string
   customer_address?: string
@@ -42,8 +51,10 @@ export type PosSale = {
   total: string
   amount_paid: string
   balance_due: string
+  is_envio?: boolean
   created_at: string
   lines: PosSaleLine[]
+  fel?: PosSaleFelSummary | null
 }
 
 export type PosSaleListItem = {
@@ -52,6 +63,7 @@ export type PosSaleListItem = {
   branch_name: string
   customer?: number | null
   customer_name?: string
+  customer_nit?: string
   customer_phone?: string
   customer_email?: string
   customer_address?: string
@@ -63,11 +75,13 @@ export type PosSaleListItem = {
   total: string
   amount_paid: string
   balance_due: string
+  is_envio?: boolean
   created_at: string
   lines_count: number
   /** Suma de cantidades (unidades base) en todas las líneas. */
   total_units: number
   lines?: PedidoInventoryLine[]
+  fel?: PosSaleFelSummary | null
 }
 
 export type UnitKind = 'unit' | 'package' | 'fardo'
@@ -77,6 +91,7 @@ export type SaleCreatePayload = {
   branch: number
   customer?: number | null
   customer_name?: string
+  customer_nit?: string
   customer_phone?: string
   customer_email?: string
   customer_address?: string
@@ -85,6 +100,7 @@ export type SaleCreatePayload = {
   credit_days?: number
   credit_note?: string
   discount?: number
+  is_envio?: boolean
   lines: {
     inventory_item: number
     quantity: number
@@ -100,6 +116,7 @@ export type PosCustomer = {
   phone: string
   email: string
   address: string
+  is_active: boolean
   created_at?: string
 }
 
@@ -211,6 +228,7 @@ export function posSaleFromListItem(row: PosSaleListItem): PosSale | null {
     branch_name: row.branch_name,
     customer: row.customer ?? null,
     customer_name: row.customer_name ?? '',
+    customer_nit: row.customer_nit ?? '',
     customer_phone: row.customer_phone ?? '',
     customer_email: row.customer_email ?? '',
     customer_address: row.customer_address ?? '',
@@ -224,6 +242,7 @@ export function posSaleFromListItem(row: PosSaleListItem): PosSale | null {
     balance_due:
       row.balance_due ??
       String(Math.max(0, Number(row.total) - Number(row.amount_paid ?? 0))),
+    is_envio: row.is_envio ?? false,
     created_at: row.created_at,
     lines: row.lines.map((l) => ({
       id: l.id,
@@ -292,4 +311,55 @@ export async function listPosCustomers(search?: string): Promise<PosCustomer[]> 
 export async function createPosCustomer(payload: PosCustomerCreatePayload): Promise<PosCustomer> {
   const { data } = await api.post('/pos/customers/', payload)
   return parsePosCustomer(data) as PosCustomer
+}
+
+export type PosCustomerUpdatePayload = Partial<PosCustomerCreatePayload>
+
+export async function updatePosCustomer(
+  id: number,
+  payload: PosCustomerUpdatePayload,
+): Promise<PosCustomer> {
+  const { data } = await api.patch(`/pos/customers/${id}/`, payload)
+  return parsePosCustomer(data) as PosCustomer
+}
+
+/**
+ * Elimina un cliente. Por defecto hace soft-delete (lo marca inactivo).
+ * Si `hard` es true intenta borrado físico, pero si tiene ventas asociadas
+ * el backend cae automáticamente al soft-delete.
+ */
+export async function deletePosCustomer(id: number, hard = false): Promise<void> {
+  await api.delete(`/pos/customers/${id}/`, {
+    params: hard ? { hard: 1 } : undefined,
+  })
+}
+
+export type NitLookupResult = {
+  found: boolean
+  /** "local" = directorio del POS, "sat" = consulta externa, "cf" = consumidor final, undefined si no encontrado. */
+  source?: 'local' | 'sat' | 'cf'
+  nit?: string
+  nombre?: string
+  direccion?: string
+  phone?: string
+  email?: string
+  customer_id?: number
+}
+
+/**
+ * Resuelve un NIT: busca primero en el directorio local; si no existe,
+ * consulta el endpoint externo configurado (Corpo / SAT). Nunca lanza:
+ * si todo falla devuelve `{ found: false }`.
+ */
+export async function consultarNit(nit: string): Promise<NitLookupResult> {
+  const value = nit.trim()
+  if (!value) return { found: false }
+  try {
+    const { data } = await api.get<NitLookupResult>('/fel/consulta-nit/', {
+      params: { nit: value },
+    })
+    return data ?? { found: false }
+  } catch {
+    return { found: false }
+  }
 }

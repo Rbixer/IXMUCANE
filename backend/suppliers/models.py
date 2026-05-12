@@ -7,6 +7,10 @@ class Supplier(models.Model):
     nit = models.CharField('NIT', max_length=32, blank=True, default='')
     razon_social = models.CharField('Razón social', max_length=200, blank=True, default='')
     notes = models.TextField(blank=True, default='')
+    is_active = models.BooleanField(
+        default=True,
+        help_text='Borrado lógico: marcar False oculta el proveedor de las listas pero conserva órdenes históricas.',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -25,6 +29,10 @@ class PurchaseOrder(models.Model):
     supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name='purchase_orders')
     branch = models.ForeignKey('branches.Branch', on_delete=models.PROTECT, related_name='purchase_orders')
     reference = models.CharField(max_length=120, blank=True, default='')
+    is_active = models.BooleanField(
+        default=True,
+        help_text='Borrado lógico: oculta la orden del listado pero conserva el histórico de stock.',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

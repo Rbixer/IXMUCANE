@@ -1,6 +1,5 @@
 from datetime import timedelta
 from decimal import Decimal
-from io import BytesIO
 
 from django.db import transaction
 from django.http import HttpResponse
@@ -9,22 +8,15 @@ from django.db.models import Count, DecimalField, ExpressionWrapper, F, Q, Sum, 
 from django.db.models.functions import Coalesce, TruncDate
 from django.utils import timezone
 from rest_framework import mixins, status, viewsets
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
-from PIL import Image as PILImage
-from reportlab.lib import colors
-from reportlab.lib.enums import TA_LEFT
-from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
-from reportlab.platypus import Image as PdfImage
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-
-from reports.pdf_brand import BOUTIQUE_PDF_PAGE_SIZE, pdf_header_image_bytes
 
 from inventory.models import InventoryItem
 from inventory.unit_hierarchy import split_stock_hierarchy
 from stock.models import StockMovement
 
+from .factura_pdf import build_factura_pdf, build_factura_ticket_pdf
 from .models import Customer, Quote, Sale, SaleLine
 from .serializers import (
     CustomerSerializer,
@@ -171,79 +163,33 @@ def pos_sales_dashboard_summary(request):
     )
 
 
+def _sale_for_pdf(pk: int) -> Sale:
+    return get_object_or_404(
+        Sale.objects.select_related('branch', 'customer', 'fel__emisor')
+        .prefetch_related('lines__inventory_item'),
+        pk=pk,
+    )
+
+
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def sale_factura_pdf(request, pk: int):
-    """Factura / ticket en PDF para una venta POS (cabecera + líneas)."""
-    sale = get_object_or_404(
-        Sale.objects.select_related('branch').prefetch_related('lines__inventory_item'),
-        pk=pk,
-    )
-    buf = BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=BOUTIQUE_PDF_PAGE_SIZE, title=f'Factura-{sale.pk}')
-    styles = getSampleStyleSheet()
-    heading_left = ParagraphStyle('facHeadingLeft', parent=styles['Heading2'], alignment=TA_LEFT)
-    normal_left = ParagraphStyle('facNormalLeft', parent=styles['Normal'], alignment=TA_LEFT)
-    h3_left = ParagraphStyle('facH3Left', parent=styles['Heading3'], alignment=TA_LEFT)
-    italic_left = ParagraphStyle('facItalicLeft', parent=styles['Italic'], alignment=TA_LEFT)
-    logo_buf = pdf_header_image_bytes()
-    logo_buf.seek(0)
-    with PILImage.open(logo_buf) as pil_im:
-        lw, lh = pil_im.size
-    logo_buf.seek(0)
-    logo_max_w = 96.0
-    logo_w = min(logo_max_w, float(lw)) if lw else logo_max_w
-    logo_h = logo_w * (float(lh) / float(lw)) if lw else 28.0
-    story = [
-        PdfImage(logo_buf, width=logo_w, height=logo_h, hAlign='LEFT'),
-        Spacer(1, 8),
-        Paragraph('<b>Factura / Ticket de venta</b>', heading_left),
-        Spacer(1, 8),
-        Paragraph(f'<b>No. ticket:</b> {sale.pk}', normal_left),
-        Paragraph(f'<b>Fecha:</b> {sale.created_at.strftime("%Y-%m-%d %H:%M")}', normal_left),
-        Paragraph(f'<b>Forma de pago:</b> {sale.get_payment_method_display()}', normal_left),
-        Spacer(1, 14),
-    ]
-    data = [['SKU', 'Producto', 'Cant.', 'P. unit.', 'Subtotal']]
-    for ln in sale.lines.all():
-        sub = Decimal(ln.unit_price) * ln.quantity
-        data.append(
-            [
-                ln.inventory_item.sku,
-                ln.inventory_item.name[:48],
-                str(ln.quantity),
-                str(ln.unit_price),
-                str(sub),
-            ]
-        )
-    tbl = Table(data, repeatRows=1, colWidths=[72, 200, 44, 72, 72])
-    tbl.setStyle(
-        TableStyle(
-            [
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#c40000')),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 9),
-                ('GRID', (0, 0), (-1, -1), 0.25, colors.grey),
-            ]
-        )
-    )
-    story.append(tbl)
-    story.append(Spacer(1, 16))
-    story.append(Paragraph(f'<b>Total a pagar: Q {sale.total}</b>', h3_left))
-    story.append(Spacer(1, 24))
-    story.append(
-        Paragraph(
-            'Documento generado electrónicamente a nivel de comprobante de venta. '
-            'Conserve este archivo para sus registros contables.',
-            italic_left,
-        )
-    )
-    doc.build(story)
-    pdf = buf.getvalue()
-    buf.close()
+    """Factura tamaño carta con datos FEL (Serie, autorización, totales, IVA)."""
+    sale = _sale_for_pdf(pk)
+    pdf, filename = build_factura_pdf(sale)
     resp = HttpResponse(pdf, content_type='application/pdf')
-    resp['Content-Disposition'] = f'attachment; filename="factura_ticket_{sale.pk}.pdf"'
+    resp['Content-Disposition'] = f'attachment; filename="{filename}"'
+    return resp
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def sale_factura_ticket_pdf(request, pk: int):
+    """Ticket de 80mm (impresora térmica) con datos FEL."""
+    sale = _sale_for_pdf(pk)
+    pdf, filename = build_factura_ticket_pdf(sale)
+    resp = HttpResponse(pdf, content_type='application/pdf')
+    resp['Content-Disposition'] = f'attachment; filename="{filename}"'
     return resp
 
 
@@ -258,7 +204,11 @@ class SaleViewSet(
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        qs = Sale.objects.select_related('branch').prefetch_related('lines__inventory_item').all()
+        qs = (
+            Sale.objects.select_related('branch', 'fel')
+            .prefetch_related('lines__inventory_item')
+            .all()
+        )
         branch = self.request.query_params.get('branch')
         if branch and str(branch).isdigit():
             qs = qs.filter(branch_id=int(branch))
@@ -267,6 +217,11 @@ class SaleViewSet(
             qs = qs.filter(payment_status=ps)
         elif ps == 'pending_collection':
             qs = qs.filter(payment_status__in=['credit', 'pending'])
+        fel_estado = self.request.query_params.get('fel')
+        if fel_estado in ('certificado', 'pendiente', 'rechazado', 'error'):
+            qs = qs.filter(fel__estado=fel_estado)
+        elif fel_estado == 'sin':
+            qs = qs.filter(fel__isnull=True)
         return qs.order_by('-created_at')
 
     def get_serializer_class(self):
@@ -353,19 +308,87 @@ class CustomerViewSet(
     mixins.ListModelMixin,
     mixins.CreateModelMixin,
     mixins.RetrieveModelMixin,
+    mixins.UpdateModelMixin,
+    mixins.DestroyModelMixin,
     viewsets.GenericViewSet,
 ):
-    """Clientes POS: alta y listado con filtro por nombre o NIT."""
+    """Clientes POS: CRUD completo con soft-delete y filtro por nombre/NIT."""
 
     permission_classes = [IsAuthenticated]
     serializer_class = CustomerSerializer
 
     def get_queryset(self):
         qs = Customer.objects.all().order_by('name', 'id')
+        include_inactive = (self.request.query_params.get('include_inactive') or '').lower() in (
+            '1', 'true', 'yes',
+        )
+        # Las acciones de detalle (retrieve/update/destroy) deben poder acceder
+        # también a clientes inactivos para poder reactivarlos / borrarlos.
+        if self.action == 'list' and not include_inactive:
+            qs = qs.filter(is_active=True)
         q = (self.request.query_params.get('q') or '').strip()
         if q:
-            qs = qs.filter(Q(name__icontains=q) | Q(nit__icontains=q))
+            qs = qs.filter(
+                Q(name__icontains=q) | Q(nit__icontains=q) | Q(phone__icontains=q)
+            )
         return qs
+
+    def perform_destroy(self, instance: Customer) -> None:
+        """Soft-delete por defecto. Con `?hard=1` borra físicamente si es seguro.
+
+        Si el cliente tiene ventas asociadas (FK PROTECT) el hard delete fallará;
+        en ese caso devolvemos un mensaje claro y dejamos el soft-delete como
+        fallback automático.
+        """
+        hard = (self.request.query_params.get('hard') or '').lower() in ('1', 'true', 'yes')
+        if hard:
+            from django.db.models import ProtectedError
+            try:
+                instance.delete()
+                return
+            except ProtectedError:
+                # Tiene ventas; caemos a soft-delete.
+                pass
+        instance.is_active = False
+        instance.save(update_fields=['is_active'])
+
+    @action(detail=True, methods=['post'], url_path='restore')
+    def restore(self, request, pk=None):
+        """Reactivar un cliente previamente desactivado."""
+        customer = self.get_object()
+        if customer.is_active:
+            return Response({'detail': 'El cliente ya está activo.'}, status=status.HTTP_200_OK)
+        customer.is_active = True
+        customer.save(update_fields=['is_active'])
+        return Response(CustomerSerializer(customer).data, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], url_path='lookup-by-nit')
+    def lookup_by_nit(self, request):
+        """GET /api/v1/pos/customers/lookup-by-nit/?nit=XXXXXX
+
+        Búsqueda exacta por NIT (ignora guion y espacios). Devuelve
+        {"found": true, "customer": {...}} si existe; en caso contrario
+        {"found": false, "nit": "<normalizado>"}.
+        """
+        raw = (request.query_params.get('nit') or '').strip().upper()
+        if not raw:
+            return Response({'detail': 'Indique un NIT.'}, status=status.HTTP_400_BAD_REQUEST)
+        nit = raw.replace('-', '').replace(' ', '')
+        if not nit:
+            return Response({'found': False, 'nit': nit})
+        customer = Customer.objects.filter(
+            Q(nit__iexact=raw) | Q(nit__iexact=nit)
+        ).first()
+        if customer is None:
+            # también soportar match aproximado por número (ignorando símbolos)
+            for c in Customer.objects.exclude(nit='').only('id', 'nit'):
+                norm = (c.nit or '').upper().replace('-', '').replace(' ', '')
+                if norm == nit:
+                    customer = Customer.objects.get(pk=c.pk)
+                    break
+        if customer is None:
+            return Response({'found': False, 'nit': nit})
+        return Response({'found': True, 'customer': CustomerSerializer(customer).data})
 
 
 class QuoteViewSet(

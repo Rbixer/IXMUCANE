@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
 
+from django.db.models import Count, DecimalField, ExpressionWrapper, F, Q, Sum, Value
+from django.db.models.functions import Coalesce, TruncDate
 from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 from openpyxl import Workbook
@@ -24,7 +26,7 @@ from rest_framework.permissions import IsAuthenticated
 
 from inventory.models import InventoryItem
 from inventory.unit_hierarchy import hierarchy_label, split_stock_hierarchy
-from pos.models import Sale
+from pos.models import Sale, SaleLine
 from branches.models import Branch
 from suppliers.models import PurchaseOrder, Supplier
 
@@ -634,3 +636,723 @@ def cobros_report(request, salida: str = 'pdf'):
         return _set_no_store(resp)
 
     return _set_no_store(JsonResponse({'detail': 'Use json o pdf.'}, status=400))
+
+
+# ╔══════════════════════════════════════════════════════════════════════════╗
+# ║  REPORTE DE GANANCIAS (semana / quincena / mes)                          ║
+# ╚══════════════════════════════════════════════════════════════════════════╝
+
+_PERIODOS_GANANCIAS = {
+    'semana': (7, 'Última semana (7 días)'),
+    'quincena': (15, 'Última quincena (15 días)'),
+    'mes': (30, 'Último mes (30 días)'),
+}
+
+
+def _zero_dec(places: int = 2) -> Value:
+    return Value(Decimal('0'), output_field=DecimalField(max_digits=14, decimal_places=places))
+
+
+def _line_margin_expr() -> ExpressionWrapper:
+    """`quantity * (unit_price - cost_price)` — ganancia bruta de cada línea."""
+    cost_f = Coalesce(
+        F('inventory_item__cost_price'),
+        _zero_dec(2),
+        output_field=DecimalField(max_digits=12, decimal_places=2),
+    )
+    return ExpressionWrapper(
+        F('quantity') * (F('unit_price') - cost_f),
+        output_field=DecimalField(max_digits=18, decimal_places=2),
+    )
+
+
+def _line_revenue_expr() -> ExpressionWrapper:
+    return ExpressionWrapper(
+        F('quantity') * F('unit_price'),
+        output_field=DecimalField(max_digits=18, decimal_places=2),
+    )
+
+
+def _line_cost_expr() -> ExpressionWrapper:
+    cost_f = Coalesce(
+        F('inventory_item__cost_price'),
+        _zero_dec(2),
+        output_field=DecimalField(max_digits=12, decimal_places=2),
+    )
+    return ExpressionWrapper(
+        F('quantity') * cost_f,
+        output_field=DecimalField(max_digits=18, decimal_places=2),
+    )
+
+
+def _q(d: Decimal | None) -> str:
+    return str((d or Decimal('0')).quantize(Decimal('0.01')))
+
+
+def _margen_pct(ganancia: Decimal, ventas: Decimal) -> str:
+    if not ventas or ventas == 0:
+        return '0.00'
+    return str((ganancia / ventas * Decimal('100')).quantize(Decimal('0.01')))
+
+
+def _ganancias_data(periodo: str, branch_id: int | None) -> dict:
+    """Calcula KPIs y desgloses para el periodo dado."""
+    days, label = _PERIODOS_GANANCIAS[periodo]
+    now = timezone.now()
+    since = now - timedelta(days=days)
+    prev_since = since - timedelta(days=days)
+
+    sales_qs = Sale.objects.filter(created_at__gte=since)
+    if branch_id is not None:
+        sales_qs = sales_qs.filter(branch_id=branch_id)
+
+    lines_qs = SaleLine.objects.filter(sale__created_at__gte=since)
+    if branch_id is not None:
+        lines_qs = lines_qs.filter(sale__branch_id=branch_id)
+
+    revenue_expr = _line_revenue_expr()
+    cost_expr = _line_cost_expr()
+    margin_expr = _line_margin_expr()
+
+    # ── KPIs globales del periodo
+    line_totals = lines_qs.aggregate(
+        ingresos=Sum(revenue_expr),
+        costo=Sum(cost_expr),
+        ganancia=Sum(margin_expr),
+        unidades=Sum('quantity'),
+    )
+    ingresos = line_totals['ingresos'] or Decimal('0')
+    costo = line_totals['costo'] or Decimal('0')
+    ganancia = line_totals['ganancia'] or Decimal('0')
+    unidades = int(line_totals['unidades'] or 0)
+
+    sale_totals = sales_qs.aggregate(
+        tickets=Count('id'),
+        descuentos=Sum('discount'),
+        ventas_brutas=Sum('total'),
+    )
+    tickets = int(sale_totals['tickets'] or 0)
+    descuentos = sale_totals['descuentos'] or Decimal('0')
+    ventas_brutas = sale_totals['ventas_brutas'] or Decimal('0')
+
+    # ganancia neta = ganancia bruta - descuentos (los descuentos salen del margen)
+    ganancia_neta = ganancia - descuentos
+    ticket_promedio = (ventas_brutas / tickets) if tickets > 0 else Decimal('0')
+    ganancia_promedio = (ganancia_neta / tickets) if tickets > 0 else Decimal('0')
+
+    # ── Comparación con periodo anterior (mismo número de días previos)
+    prev_lines_qs = SaleLine.objects.filter(
+        sale__created_at__gte=prev_since,
+        sale__created_at__lt=since,
+    )
+    prev_sales_qs = Sale.objects.filter(
+        created_at__gte=prev_since, created_at__lt=since,
+    )
+    if branch_id is not None:
+        prev_lines_qs = prev_lines_qs.filter(sale__branch_id=branch_id)
+        prev_sales_qs = prev_sales_qs.filter(branch_id=branch_id)
+    prev_totals = prev_lines_qs.aggregate(
+        ingresos=Sum(revenue_expr),
+        ganancia=Sum(margin_expr),
+    )
+    prev_sales_totals = prev_sales_qs.aggregate(
+        tickets=Count('id'),
+        descuentos=Sum('discount'),
+        ventas_brutas=Sum('total'),
+    )
+    prev_ingresos = prev_totals['ingresos'] or Decimal('0')
+    prev_ganancia = (prev_totals['ganancia'] or Decimal('0')) - (
+        prev_sales_totals['descuentos'] or Decimal('0')
+    )
+    prev_ventas_brutas = prev_sales_totals['ventas_brutas'] or Decimal('0')
+    prev_tickets = int(prev_sales_totals['tickets'] or 0)
+
+    def _delta_pct(curr: Decimal, prev: Decimal) -> str:
+        if not prev or prev == 0:
+            return '0.00' if not curr or curr == 0 else '100.00'
+        return str(((curr - prev) / prev * Decimal('100')).quantize(Decimal('0.01')))
+
+    # ── Serie diaria
+    daily_lines = (
+        lines_qs.annotate(day=TruncDate('sale__created_at'))
+        .values('day')
+        .annotate(
+            ingresos=Sum(revenue_expr),
+            costo=Sum(cost_expr),
+            ganancia=Sum(margin_expr),
+            unidades=Sum('quantity'),
+        )
+        .order_by('day')
+    )
+    daily_sales = (
+        sales_qs.annotate(day=TruncDate('created_at'))
+        .values('day')
+        .annotate(
+            tickets=Count('id'),
+            descuentos=Sum('discount'),
+            ventas_brutas=Sum('total'),
+        )
+        .order_by('day')
+    )
+    daily_sales_map = {r['day']: r for r in daily_sales}
+    daily = []
+    for r in daily_lines:
+        ds = daily_sales_map.get(r['day']) or {}
+        d_descuentos = ds.get('descuentos') or Decimal('0')
+        d_ganancia = (r.get('ganancia') or Decimal('0')) - d_descuentos
+        d_ingresos = r.get('ingresos') or Decimal('0')
+        daily.append({
+            'fecha': r['day'].isoformat() if r['day'] else None,
+            'ingresos': _q(d_ingresos),
+            'ventas': _q(ds.get('ventas_brutas') or d_ingresos),
+            'costo': _q(r.get('costo')),
+            'descuento': _q(d_descuentos),
+            'ganancia': _q(d_ganancia),
+            'tickets': int(ds.get('tickets') or 0),
+            'unidades': int(r.get('unidades') or 0),
+            'margen_pct': _margen_pct(d_ganancia, d_ingresos),
+        })
+
+    # ── Top productos por ganancia
+    top_productos_rows = (
+        lines_qs.values(
+            'inventory_item_id',
+            'inventory_item__name',
+            'inventory_item__sku',
+            'inventory_item__category__name',
+        )
+        .annotate(
+            unidades=Sum('quantity'),
+            ingresos=Sum(revenue_expr),
+            costo=Sum(cost_expr),
+            ganancia=Sum(margin_expr),
+            apariciones=Count('id'),
+        )
+        .order_by('-ganancia')[:25]
+    )
+    top_productos = [
+        {
+            'id': r['inventory_item_id'],
+            'sku': r['inventory_item__sku'] or '',
+            'nombre': r['inventory_item__name'] or '',
+            'categoria': r['inventory_item__category__name'] or '',
+            'unidades': int(r['unidades'] or 0),
+            'ingresos': _q(r['ingresos']),
+            'costo': _q(r['costo']),
+            'ganancia': _q(r['ganancia']),
+            'margen_pct': _margen_pct(r['ganancia'] or Decimal('0'), r['ingresos'] or Decimal('0')),
+            'tickets': int(r['apariciones'] or 0),
+        }
+        for r in top_productos_rows
+    ]
+
+    # ── Top categorías
+    top_categorias_rows = (
+        lines_qs.values('inventory_item__category__name')
+        .annotate(
+            ingresos=Sum(revenue_expr),
+            costo=Sum(cost_expr),
+            ganancia=Sum(margin_expr),
+            unidades=Sum('quantity'),
+            productos=Count('inventory_item_id', distinct=True),
+        )
+        .order_by('-ganancia')
+    )
+    top_categorias = [
+        {
+            'categoria': r['inventory_item__category__name'] or 'Sin categoría',
+            'ingresos': _q(r['ingresos']),
+            'costo': _q(r['costo']),
+            'ganancia': _q(r['ganancia']),
+            'margen_pct': _margen_pct(r['ganancia'] or Decimal('0'), r['ingresos'] or Decimal('0')),
+            'unidades': int(r['unidades'] or 0),
+            'productos': int(r['productos'] or 0),
+        }
+        for r in top_categorias_rows[:15]
+    ]
+
+    # ── Por sucursal
+    por_sucursal_rows = (
+        lines_qs.values('sale__branch_id', 'sale__branch__name')
+        .annotate(
+            ingresos=Sum(revenue_expr),
+            costo=Sum(cost_expr),
+            ganancia=Sum(margin_expr),
+            unidades=Sum('quantity'),
+            tickets=Count('sale_id', distinct=True),
+        )
+        .order_by('-ganancia')
+    )
+    por_sucursal = [
+        {
+            'branch_id': r['sale__branch_id'],
+            'branch_name': r['sale__branch__name'] or '',
+            'ingresos': _q(r['ingresos']),
+            'costo': _q(r['costo']),
+            'ganancia': _q(r['ganancia']),
+            'margen_pct': _margen_pct(r['ganancia'] or Decimal('0'), r['ingresos'] or Decimal('0')),
+            'unidades': int(r['unidades'] or 0),
+            'tickets': int(r['tickets'] or 0),
+        }
+        for r in por_sucursal_rows
+    ]
+
+    # ── Por método de pago
+    pago_rows = (
+        sales_qs.values('payment_method')
+        .annotate(
+            tickets=Count('id'),
+            ventas=Sum('total'),
+        )
+        .order_by('-ventas')
+    )
+    payment_labels = {
+        'cash': 'Efectivo',
+        'card': 'Tarjeta',
+        'other': 'Otro',
+    }
+    por_pago = [
+        {
+            'metodo': r['payment_method'],
+            'metodo_label': payment_labels.get(r['payment_method'], r['payment_method']),
+            'tickets': int(r['tickets'] or 0),
+            'ventas': _q(r['ventas']),
+        }
+        for r in pago_rows
+    ]
+
+    # ── Por estado de pago (pagado vs crédito vs pendiente)
+    estado_rows = (
+        sales_qs.values('payment_status')
+        .annotate(
+            tickets=Count('id'),
+            ventas=Sum('total'),
+            cobrado=Sum('amount_paid'),
+        )
+        .order_by('-ventas')
+    )
+    estado_labels = {
+        'paid': 'Pagado',
+        'credit': 'Crédito',
+        'pending': 'Pendiente',
+    }
+    por_estado = [
+        {
+            'estado': r['payment_status'],
+            'estado_label': estado_labels.get(r['payment_status'], r['payment_status']),
+            'tickets': int(r['tickets'] or 0),
+            'ventas': _q(r['ventas']),
+            'cobrado': _q(r['cobrado']),
+            'pendiente': _q((r['ventas'] or Decimal('0')) - (r['cobrado'] or Decimal('0'))),
+        }
+        for r in estado_rows
+    ]
+
+    # ── Top clientes (por ganancia)
+    top_clientes_rows = (
+        lines_qs.values('sale__customer_id', 'sale__customer_name', 'sale__customer_nit')
+        .annotate(
+            ingresos=Sum(revenue_expr),
+            ganancia=Sum(margin_expr),
+            tickets=Count('sale_id', distinct=True),
+            unidades=Sum('quantity'),
+        )
+        .order_by('-ganancia')[:15]
+    )
+    top_clientes = [
+        {
+            'customer_id': r['sale__customer_id'],
+            'nombre': r['sale__customer_name'] or 'Consumidor final',
+            'nit': r['sale__customer_nit'] or '',
+            'tickets': int(r['tickets'] or 0),
+            'unidades': int(r['unidades'] or 0),
+            'ingresos': _q(r['ingresos']),
+            'ganancia': _q(r['ganancia']),
+        }
+        for r in top_clientes_rows
+    ]
+
+    # ── Tickets más rentables
+    margin_per_sale = ExpressionWrapper(
+        F('lines__quantity') * (
+            F('lines__unit_price')
+            - Coalesce(
+                F('lines__inventory_item__cost_price'),
+                _zero_dec(2),
+                output_field=DecimalField(max_digits=12, decimal_places=2),
+            )
+        ),
+        output_field=DecimalField(max_digits=18, decimal_places=2),
+    )
+    top_tickets_rows = (
+        sales_qs.annotate(
+            ganancia_bruta=Sum(margin_per_sale),
+            ingresos_linea=Sum(
+                ExpressionWrapper(
+                    F('lines__quantity') * F('lines__unit_price'),
+                    output_field=DecimalField(max_digits=18, decimal_places=2),
+                )
+            ),
+            lines_count=Count('lines', distinct=True),
+        )
+        .order_by('-ganancia_bruta')[:15]
+    )
+    top_tickets = []
+    for s in top_tickets_rows:
+        gb = s.ganancia_bruta or Decimal('0')
+        gn = gb - (s.discount or Decimal('0'))
+        top_tickets.append({
+            'id': s.id,
+            'fecha': s.created_at.isoformat(),
+            'cliente': s.customer_name or 'Consumidor final',
+            'sucursal': s.branch.name if s.branch_id else '',
+            'tickets': 1,
+            'lineas': int(s.lines_count or 0),
+            'ingresos': _q(s.ingresos_linea),
+            'descuento': _q(s.discount),
+            'total': _q(s.total),
+            'ganancia': _q(gn),
+        })
+
+    return {
+        'periodo': periodo,
+        'periodo_label': label,
+        'desde': since.isoformat(),
+        'hasta': now.isoformat(),
+        'branch_id': branch_id,
+        'kpis': {
+            'tickets': tickets,
+            'unidades': unidades,
+            'ventas_brutas': _q(ventas_brutas),
+            'ingresos': _q(ingresos),
+            'descuentos': _q(descuentos),
+            'costo': _q(costo),
+            'ganancia_bruta': _q(ganancia),
+            'ganancia_neta': _q(ganancia_neta),
+            'margen_pct': _margen_pct(ganancia_neta, ingresos),
+            'ticket_promedio': _q(ticket_promedio),
+            'ganancia_promedio': _q(ganancia_promedio),
+        },
+        'comparacion': {
+            'tickets_prev': prev_tickets,
+            'ventas_prev': _q(prev_ventas_brutas),
+            'ganancia_prev': _q(prev_ganancia),
+            'delta_ventas_pct': _delta_pct(ventas_brutas, prev_ventas_brutas),
+            'delta_ganancia_pct': _delta_pct(ganancia_neta, prev_ganancia),
+            'delta_tickets_pct': _delta_pct(Decimal(tickets), Decimal(prev_tickets)),
+        },
+        'serie_diaria': daily,
+        'top_productos': top_productos,
+        'top_categorias': top_categorias,
+        'por_sucursal': por_sucursal,
+        'por_pago': por_pago,
+        'por_estado': por_estado,
+        'top_clientes': top_clientes,
+        'top_tickets': top_tickets,
+    }
+
+
+def _ganancias_xlsx(data: dict) -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Resumen'
+    _add_logo_to_ws(ws, 'A1')
+    bold = Font(bold=True)
+
+    ws.cell(row=8, column=1, value='Reporte de ganancias').font = Font(bold=True, size=14)
+    ws.cell(row=9, column=1, value=f'Periodo: {data["periodo_label"]}')
+    ws.cell(row=10, column=1, value=f'Desde: {data["desde"][:19]}  Hasta: {data["hasta"][:19]}')
+
+    k = data['kpis']
+    summary_rows = [
+        ('Tickets', k['tickets']),
+        ('Unidades vendidas', k['unidades']),
+        ('Ventas (totales)', f'Q {k["ventas_brutas"]}'),
+        ('Ingresos brutos por línea', f'Q {k["ingresos"]}'),
+        ('Descuentos', f'Q {k["descuentos"]}'),
+        ('Costo de mercancía', f'Q {k["costo"]}'),
+        ('Ganancia bruta', f'Q {k["ganancia_bruta"]}'),
+        ('Ganancia neta', f'Q {k["ganancia_neta"]}'),
+        ('Margen', f'{k["margen_pct"]} %'),
+        ('Ticket promedio', f'Q {k["ticket_promedio"]}'),
+        ('Ganancia promedio por ticket', f'Q {k["ganancia_promedio"]}'),
+    ]
+    r = 12
+    ws.cell(row=r, column=1, value='Indicador').font = bold
+    ws.cell(row=r, column=2, value='Valor').font = bold
+    r += 1
+    for label, value in summary_rows:
+        ws.cell(row=r, column=1, value=label)
+        ws.cell(row=r, column=2, value=value)
+        r += 1
+
+    # Comparación
+    cmp = data['comparacion']
+    r += 2
+    ws.cell(row=r, column=1, value='Comparación con periodo anterior').font = bold
+    r += 1
+    for label, value in [
+        ('Ventas previas', f'Q {cmp["ventas_prev"]}'),
+        ('Ganancia previa', f'Q {cmp["ganancia_prev"]}'),
+        ('Δ Ventas', f'{cmp["delta_ventas_pct"]} %'),
+        ('Δ Ganancia', f'{cmp["delta_ganancia_pct"]} %'),
+        ('Δ Tickets', f'{cmp["delta_tickets_pct"]} %'),
+    ]:
+        ws.cell(row=r, column=1, value=label)
+        ws.cell(row=r, column=2, value=value)
+        r += 1
+
+    # Serie diaria
+    ws2 = wb.create_sheet('Serie diaria')
+    _add_logo_to_ws(ws2, 'A1')
+    h = ['Fecha', 'Tickets', 'Unidades', 'Ingresos', 'Costo', 'Descuento', 'Ganancia', 'Margen %']
+    for c, t in enumerate(h, start=1):
+        ws2.cell(row=8, column=c, value=t).font = bold
+    for i, row in enumerate(data['serie_diaria'], start=9):
+        ws2.cell(row=i, column=1, value=row['fecha'])
+        ws2.cell(row=i, column=2, value=row['tickets'])
+        ws2.cell(row=i, column=3, value=row['unidades'])
+        ws2.cell(row=i, column=4, value=float(row['ingresos']))
+        ws2.cell(row=i, column=5, value=float(row['costo']))
+        ws2.cell(row=i, column=6, value=float(row['descuento']))
+        ws2.cell(row=i, column=7, value=float(row['ganancia']))
+        ws2.cell(row=i, column=8, value=float(row['margen_pct']))
+
+    # Top productos
+    ws3 = wb.create_sheet('Top productos')
+    _add_logo_to_ws(ws3, 'A1')
+    h = ['SKU', 'Producto', 'Categoría', 'Unidades', 'Ingresos', 'Costo', 'Ganancia', 'Margen %', 'Tickets']
+    for c, t in enumerate(h, start=1):
+        ws3.cell(row=8, column=c, value=t).font = bold
+    for i, p in enumerate(data['top_productos'], start=9):
+        ws3.cell(row=i, column=1, value=p['sku'])
+        ws3.cell(row=i, column=2, value=p['nombre'][:60])
+        ws3.cell(row=i, column=3, value=p['categoria'])
+        ws3.cell(row=i, column=4, value=p['unidades'])
+        ws3.cell(row=i, column=5, value=float(p['ingresos']))
+        ws3.cell(row=i, column=6, value=float(p['costo']))
+        ws3.cell(row=i, column=7, value=float(p['ganancia']))
+        ws3.cell(row=i, column=8, value=float(p['margen_pct']))
+        ws3.cell(row=i, column=9, value=p['tickets'])
+
+    # Top categorías
+    ws4 = wb.create_sheet('Categorías')
+    _add_logo_to_ws(ws4, 'A1')
+    h = ['Categoría', 'Productos', 'Unidades', 'Ingresos', 'Costo', 'Ganancia', 'Margen %']
+    for c, t in enumerate(h, start=1):
+        ws4.cell(row=8, column=c, value=t).font = bold
+    for i, c2 in enumerate(data['top_categorias'], start=9):
+        ws4.cell(row=i, column=1, value=c2['categoria'])
+        ws4.cell(row=i, column=2, value=c2['productos'])
+        ws4.cell(row=i, column=3, value=c2['unidades'])
+        ws4.cell(row=i, column=4, value=float(c2['ingresos']))
+        ws4.cell(row=i, column=5, value=float(c2['costo']))
+        ws4.cell(row=i, column=6, value=float(c2['ganancia']))
+        ws4.cell(row=i, column=7, value=float(c2['margen_pct']))
+
+    # Sucursales
+    ws5 = wb.create_sheet('Sucursales')
+    _add_logo_to_ws(ws5, 'A1')
+    h = ['Sucursal', 'Tickets', 'Unidades', 'Ingresos', 'Costo', 'Ganancia', 'Margen %']
+    for c, t in enumerate(h, start=1):
+        ws5.cell(row=8, column=c, value=t).font = bold
+    for i, b in enumerate(data['por_sucursal'], start=9):
+        ws5.cell(row=i, column=1, value=b['branch_name'])
+        ws5.cell(row=i, column=2, value=b['tickets'])
+        ws5.cell(row=i, column=3, value=b['unidades'])
+        ws5.cell(row=i, column=4, value=float(b['ingresos']))
+        ws5.cell(row=i, column=5, value=float(b['costo']))
+        ws5.cell(row=i, column=6, value=float(b['ganancia']))
+        ws5.cell(row=i, column=7, value=float(b['margen_pct']))
+
+    # Clientes
+    ws6 = wb.create_sheet('Clientes')
+    _add_logo_to_ws(ws6, 'A1')
+    h = ['Cliente', 'NIT', 'Tickets', 'Unidades', 'Ingresos', 'Ganancia']
+    for c, t in enumerate(h, start=1):
+        ws6.cell(row=8, column=c, value=t).font = bold
+    for i, cu in enumerate(data['top_clientes'], start=9):
+        ws6.cell(row=i, column=1, value=cu['nombre'])
+        ws6.cell(row=i, column=2, value=cu['nit'])
+        ws6.cell(row=i, column=3, value=cu['tickets'])
+        ws6.cell(row=i, column=4, value=cu['unidades'])
+        ws6.cell(row=i, column=5, value=float(cu['ingresos']))
+        ws6.cell(row=i, column=6, value=float(cu['ganancia']))
+
+    # Tickets top
+    ws7 = wb.create_sheet('Tickets')
+    _add_logo_to_ws(ws7, 'A1')
+    h = ['Ticket', 'Fecha', 'Cliente', 'Sucursal', 'Líneas', 'Ingresos', 'Descuento', 'Total', 'Ganancia']
+    for c, t in enumerate(h, start=1):
+        ws7.cell(row=8, column=c, value=t).font = bold
+    for i, t in enumerate(data['top_tickets'], start=9):
+        ws7.cell(row=i, column=1, value=t['id'])
+        ws7.cell(row=i, column=2, value=t['fecha'][:19])
+        ws7.cell(row=i, column=3, value=t['cliente'][:50])
+        ws7.cell(row=i, column=4, value=t['sucursal'])
+        ws7.cell(row=i, column=5, value=t['lineas'])
+        ws7.cell(row=i, column=6, value=float(t['ingresos']))
+        ws7.cell(row=i, column=7, value=float(t['descuento']))
+        ws7.cell(row=i, column=8, value=float(t['total']))
+        ws7.cell(row=i, column=9, value=float(t['ganancia']))
+
+    buf = BytesIO()
+    wb.save(buf)
+    out = buf.getvalue()
+    buf.close()
+    return out
+
+
+def _ganancias_pdf(data: dict) -> bytes:
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=BOUTIQUE_PDF_PAGE_SIZE, title='Reporte de Ganancias')
+    styles = getSampleStyleSheet()
+    h_left = ParagraphStyle('gH', parent=styles['Heading2'], alignment=TA_LEFT)
+    n_left = ParagraphStyle('gN', parent=styles['Normal'], alignment=TA_LEFT)
+    h3_left = ParagraphStyle('gH3', parent=styles['Heading3'], alignment=TA_LEFT)
+
+    logo_buf = pdf_header_image_bytes()
+    logo_buf.seek(0)
+    with PILImage.open(logo_buf) as pil_im:
+        lw, lh = pil_im.size
+    logo_buf.seek(0)
+    logo_max_w = 96.0
+    logo_w = min(logo_max_w, float(lw)) if lw else logo_max_w
+    logo_h = logo_w * (float(lh) / float(lw)) if lw else 28.0
+
+    k = data['kpis']
+    cmp = data['comparacion']
+
+    story = [
+        PdfImage(logo_buf, width=logo_w, height=logo_h, hAlign='LEFT'),
+        Spacer(1, 8),
+        Paragraph('<b>Reporte de Ganancias</b>', h_left),
+        Paragraph(f'Periodo: {data["periodo_label"]}', n_left),
+        Paragraph(f'Desde: {data["desde"][:19]} — Hasta: {data["hasta"][:19]}', n_left),
+        Spacer(1, 14),
+    ]
+
+    # KPIs como tabla
+    kpi_rows = [
+        ['Tickets', str(k['tickets']), 'Unidades', str(k['unidades'])],
+        ['Ventas', f'Q {k["ventas_brutas"]}', 'Ingresos brutos', f'Q {k["ingresos"]}'],
+        ['Descuentos', f'Q {k["descuentos"]}', 'Costo', f'Q {k["costo"]}'],
+        ['Ganancia bruta', f'Q {k["ganancia_bruta"]}', 'Ganancia neta', f'Q {k["ganancia_neta"]}'],
+        ['Margen', f'{k["margen_pct"]} %', 'Ticket promedio', f'Q {k["ticket_promedio"]}'],
+        ['Ganancia/ticket', f'Q {k["ganancia_promedio"]}', 'Δ Ganancia', f'{cmp["delta_ganancia_pct"]} %'],
+    ]
+    kpi_tbl = Table(kpi_rows, colWidths=[110, 120, 110, 120])
+    kpi_tbl.setStyle(TableStyle([
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#CCCCCC')),
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#F1F5F9')),
+        ('BACKGROUND', (2, 0), (2, -1), colors.HexColor('#F1F5F9')),
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTNAME', (2, 0), (2, -1), 'Helvetica-Bold'),
+    ]))
+    story.append(kpi_tbl)
+    story.append(Spacer(1, 16))
+
+    # Top productos
+    story.append(Paragraph('<b>Top productos por ganancia</b>', h3_left))
+    prod_rows = [['SKU', 'Producto', 'Cat.', 'Unid.', 'Ingresos', 'Ganancia', 'Margen %']]
+    for p in data['top_productos'][:15]:
+        prod_rows.append([
+            p['sku'][:14],
+            p['nombre'][:32],
+            (p['categoria'] or '')[:12],
+            str(p['unidades']),
+            f'Q {p["ingresos"]}',
+            f'Q {p["ganancia"]}',
+            f'{p["margen_pct"]}%',
+        ])
+    prod_tbl = Table(prod_rows, repeatRows=1, colWidths=[60, 150, 60, 40, 64, 64, 50])
+    prod_tbl.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e3a5f')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 7.5),
+        ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#CCCCCC')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F7FAFF')]),
+    ]))
+    story.append(prod_tbl)
+    story.append(Spacer(1, 14))
+
+    # Sucursales
+    story.append(Paragraph('<b>Por sucursal</b>', h3_left))
+    suc_rows = [['Sucursal', 'Tickets', 'Unidades', 'Ingresos', 'Ganancia', 'Margen %']]
+    for b in data['por_sucursal']:
+        suc_rows.append([
+            b['branch_name'][:32],
+            str(b['tickets']),
+            str(b['unidades']),
+            f'Q {b["ingresos"]}',
+            f'Q {b["ganancia"]}',
+            f'{b["margen_pct"]}%',
+        ])
+    suc_tbl = Table(suc_rows, repeatRows=1, colWidths=[140, 60, 60, 80, 80, 60])
+    suc_tbl.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1e3a5f')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#CCCCCC')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F7FAFF')]),
+    ]))
+    story.append(suc_tbl)
+
+    doc.build(story)
+    pdf = buf.getvalue()
+    buf.close()
+    return pdf
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def ganancias_report(request, salida: str | None = None):
+    """Reporte de ganancias por semana, quincena o mes.
+
+    Query params:
+      - periodo: semana | quincena | mes (default semana)
+      - branch:  id de sucursal (opcional)
+      - tipo / out / X-Boutique-Report: json | xlsx | pdf
+    """
+    if salida is not None and str(salida).strip() != '':
+        fmt = str(salida).strip().lower()
+    else:
+        fmt = _report_export_format(request)
+    if fmt not in _REPORT_KINDS:
+        return _set_no_store(JsonResponse({'detail': f'Formato no válido ({fmt}).'}, status=400))
+
+    periodo = (request.query_params.get('periodo') or 'semana').strip().lower()
+    if periodo not in _PERIODOS_GANANCIAS:
+        return _set_no_store(JsonResponse(
+            {'detail': 'periodo debe ser uno de: semana, quincena, mes.'}, status=400,
+        ))
+    branch_id = _parse_branch(request)
+
+    data = _ganancias_data(periodo, branch_id)
+
+    if fmt == 'json':
+        return _set_no_store(JsonResponse({'generated_at': timezone.now().isoformat(), **data}))
+
+    if fmt == 'xlsx':
+        out = _ganancias_xlsx(data)
+        resp = HttpResponse(
+            out,
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        resp['Content-Disposition'] = (
+            f'attachment; filename="ganancias_{periodo}_{datetime.now():%Y%m%d_%H%M}.xlsx"'
+        )
+        return _set_no_store(resp)
+
+    if fmt == 'pdf':
+        pdf = _ganancias_pdf(data)
+        resp = HttpResponse(pdf, content_type='application/pdf')
+        resp['Content-Disposition'] = (
+            f'attachment; filename="ganancias_{periodo}_{datetime.now():%Y%m%d_%H%M}.pdf"'
+        )
+        return _set_no_store(resp)
+
+    return _set_no_store(JsonResponse({'detail': 'Use json, xlsx o pdf.'}, status=400))

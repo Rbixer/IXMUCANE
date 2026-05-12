@@ -1,8 +1,27 @@
-import { useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronRight, Mail, MapPin, Phone, Receipt, Search, User, UserPlus, Users, X } from 'lucide-react'
-import { createPosCustomer, listPosCustomers, listPosSales } from './pos.service'
-import type { PosCustomer } from './pos.service'
+import {
+  ChevronRight,
+  Mail,
+  MapPin,
+  Pencil,
+  Phone,
+  Receipt,
+  Search,
+  Trash2,
+  User,
+  UserPlus,
+  Users,
+  X,
+} from 'lucide-react'
+import {
+  createPosCustomer,
+  deletePosCustomer,
+  listPosCustomers,
+  listPosSales,
+  updatePosCustomer,
+} from './pos.service'
+import type { PosCustomer, PosCustomerCreatePayload } from './pos.service'
 
 function FieldInput({
   label,
@@ -149,6 +168,207 @@ function CustomerHistoryDrawer({ customer, onClose }: { customer: PosCustomer; o
   )
 }
 
+function CustomerEditModal({
+  customer,
+  onClose,
+  onSaved,
+}: {
+  customer: PosCustomer
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const [name, setName] = useState(customer.name)
+  const [nit, setNit] = useState(customer.nit ?? '')
+  const [phone, setPhone] = useState(customer.phone ?? '')
+  const [email, setEmail] = useState(customer.email ?? '')
+  const [address, setAddress] = useState(customer.address ?? '')
+  const [error, setError] = useState('')
+
+  const mutation = useMutation({
+    mutationFn: (payload: Partial<PosCustomerCreatePayload>) =>
+      updatePosCustomer(customer.id, payload),
+    onSuccess: () => {
+      onSaved()
+      onClose()
+    },
+    onError: (e: unknown) => {
+      setError(e instanceof Error ? e.message : 'No se pudo actualizar el cliente.')
+    },
+  })
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    setError('')
+    const cleanedName = name.trim()
+    if (!cleanedName) {
+      setError('El nombre del cliente es obligatorio.')
+      return
+    }
+    mutation.mutate({
+      name: cleanedName,
+      nit: nit.trim(),
+      phone: phone.trim(),
+      email: email.trim(),
+      address: address.trim(),
+    })
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center p-0 sm:p-4">
+      <button type="button" className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-xl rounded-t-2xl sm:rounded-2xl bg-white shadow-2xl max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between border-b border-gray-100 px-5 py-4">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl" style={{ background: '#FEF2F2' }}>
+              <Pencil size={18} style={{ color: '#DC2626' }} />
+            </div>
+            <div>
+              <h2 className="text-base font-black text-gray-900">Editar cliente</h2>
+              <p className="text-xs font-medium text-gray-400">{customer.name}</p>
+            </div>
+          </div>
+          <button type="button" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-xl border border-gray-200 text-gray-400 hover:bg-gray-50">
+            <X size={16} />
+          </button>
+        </div>
+
+        <form onSubmit={submit} className="flex-1 overflow-y-auto p-5 space-y-4">
+          {error ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">
+              {error}
+            </div>
+          ) : null}
+
+          <div className="grid gap-4 sm:grid-cols-2">
+            <FieldInput
+              label="Nombre *"
+              icon={<User size={14} />}
+              value={name}
+              onChange={setName}
+              placeholder="Nombre completo del cliente"
+            />
+            <FieldInput
+              label="Teléfono"
+              icon={<Phone size={14} />}
+              value={phone}
+              onChange={setPhone}
+              placeholder="Ej. 5555-1234"
+            />
+            <FieldInput
+              label="NIT"
+              icon={<Receipt size={14} />}
+              value={nit}
+              onChange={setNit}
+              placeholder="Ej. 1234567-8"
+            />
+            <FieldInput
+              label="Correo electrónico"
+              icon={<Mail size={14} />}
+              type="email"
+              value={email}
+              onChange={setEmail}
+              placeholder="correo@ejemplo.com"
+            />
+            <div className="sm:col-span-2">
+              <FieldInput
+                label="Dirección"
+                icon={<MapPin size={14} />}
+                value={address}
+                onChange={setAddress}
+                placeholder="Zona, municipio, departamento"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-3 border-t border-gray-100 pt-4">
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-bold text-gray-700 hover:bg-gray-50"
+            >
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={mutation.isPending}
+              className="flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-black text-white transition disabled:opacity-60"
+              style={{ background: '#DC2626' }}
+            >
+              {mutation.isPending ? 'Guardando…' : 'Guardar cambios'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function ConfirmDeleteModal({
+  customer,
+  onCancel,
+  onConfirm,
+  pending,
+  errorMsg,
+}: {
+  customer: PosCustomer
+  onCancel: () => void
+  onConfirm: () => void
+  pending: boolean
+  errorMsg: string
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center p-0 sm:p-4">
+      <button type="button" className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={onCancel} />
+      <div className="relative z-10 w-full max-w-md rounded-t-2xl sm:rounded-2xl bg-white shadow-2xl">
+        <div className="flex items-center gap-3 border-b border-gray-100 px-5 py-4">
+          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-50">
+            <Trash2 size={18} className="text-red-600" />
+          </div>
+          <div>
+            <h2 className="text-base font-black text-gray-900">Eliminar cliente</h2>
+            <p className="text-xs font-medium text-gray-400">Esta acción se puede revertir reactivándolo.</p>
+          </div>
+        </div>
+
+        <div className="space-y-3 px-5 py-5">
+          <p className="text-sm text-gray-700">
+            ¿Seguro que deseas eliminar a <span className="font-black">{customer.name}</span>?
+          </p>
+          <p className="text-xs text-gray-500">
+            Si el cliente tiene ventas asociadas se ocultará del listado pero su historial
+            se conserva intacto para los reportes y facturas.
+          </p>
+          {errorMsg ? (
+            <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">
+              {errorMsg}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="flex items-center justify-end gap-3 border-t border-gray-100 px-5 py-4">
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-xl border border-gray-200 px-4 py-2.5 text-sm font-bold text-gray-700 hover:bg-gray-50"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={pending}
+            className="flex items-center gap-2 rounded-xl px-5 py-2.5 text-sm font-black text-white transition disabled:opacity-60"
+            style={{ background: '#DC2626' }}
+          >
+            <Trash2 size={14} />
+            {pending ? 'Eliminando…' : 'Sí, eliminar'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function PosClientesPage() {
   const queryClient = useQueryClient()
   const [name, setName] = useState('')
@@ -160,6 +380,9 @@ export function PosClientesPage() {
   const [error, setError] = useState('')
   const [formOpen, setFormOpen] = useState(false)
   const [selectedCustomer, setSelectedCustomer] = useState<PosCustomer | null>(null)
+  const [editingCustomer, setEditingCustomer] = useState<PosCustomer | null>(null)
+  const [deletingCustomer, setDeletingCustomer] = useState<PosCustomer | null>(null)
+  const [deleteError, setDeleteError] = useState('')
 
   const customersQuery = useQuery({
     queryKey: ['pos', 'customers'],
@@ -183,6 +406,22 @@ export function PosClientesPage() {
       setError(e instanceof Error ? e.message : 'No se pudo guardar el cliente.')
     },
   })
+
+  const deleteMutation = useMutation({
+    mutationFn: (id: number) => deletePosCustomer(id),
+    onSuccess: async () => {
+      setDeletingCustomer(null)
+      setDeleteError('')
+      await queryClient.invalidateQueries({ queryKey: ['pos', 'customers'] })
+    },
+    onError: (e: unknown) => {
+      setDeleteError(e instanceof Error ? e.message : 'No se pudo eliminar el cliente.')
+    },
+  })
+
+  useEffect(() => {
+    if (!deletingCustomer) setDeleteError('')
+  }, [deletingCustomer])
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -217,10 +456,32 @@ export function PosClientesPage() {
   const conTelefono = customersQuery.data?.filter((c) => c.phone).length ?? 0
   const conEmail = customersQuery.data?.filter((c) => c.email).length ?? 0
 
+  const handleSavedEdit = async () => {
+    await queryClient.invalidateQueries({ queryKey: ['pos', 'customers'] })
+  }
+
   return (
     <div className="mx-auto w-full max-w-[min(100%,64rem)] space-y-4">
       {selectedCustomer ? (
         <CustomerHistoryDrawer customer={selectedCustomer} onClose={() => setSelectedCustomer(null)} />
+      ) : null}
+
+      {editingCustomer ? (
+        <CustomerEditModal
+          customer={editingCustomer}
+          onClose={() => setEditingCustomer(null)}
+          onSaved={handleSavedEdit}
+        />
+      ) : null}
+
+      {deletingCustomer ? (
+        <ConfirmDeleteModal
+          customer={deletingCustomer}
+          onCancel={() => setDeletingCustomer(null)}
+          onConfirm={() => deleteMutation.mutate(deletingCustomer.id)}
+          pending={deleteMutation.isPending}
+          errorMsg={deleteError}
+        />
       ) : null}
 
       {/* ── Hero header ──────────────────────────────────────────────── */}
@@ -415,6 +676,9 @@ export function PosClientesPage() {
                   <th className="px-4 py-3 text-left text-[10px] font-bold uppercase tracking-wider text-white/70">
                     Historial
                   </th>
+                  <th className="px-4 py-3 text-right text-[10px] font-bold uppercase tracking-wider text-white/70">
+                    Acciones
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -491,6 +755,26 @@ export function PosClientesPage() {
                           Compras
                           <ChevronRight size={11} className="text-gray-400" />
                         </button>
+                      </td>
+                      <td className="px-4 py-3">
+                        <div className="flex items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setEditingCustomer(c)}
+                            title="Editar cliente"
+                            className="flex h-8 w-8 items-center justify-center rounded-xl border border-gray-200 bg-white text-gray-600 transition hover:bg-gray-50 hover:border-gray-300"
+                          >
+                            <Pencil size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setDeletingCustomer(c)}
+                            title="Eliminar cliente"
+                            className="flex h-8 w-8 items-center justify-center rounded-xl border border-red-200 bg-red-50 text-red-600 transition hover:bg-red-100 hover:border-red-300"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   )
